@@ -1,0 +1,18 @@
+{
+  "minimum_score": 80,
+  "llm_minimum_score": 85,
+  "minimum_duration_seconds": 5,
+  "maximum_duration_seconds": 900,
+  "minimum_width": 720,
+  "minimum_height": 720,
+  "blocked_terms": [
+    "百分百治愈",
+    "稳赚不赔",
+    "绝对安全",
+    "国家级最佳",
+    "私信转账"
+  ],
+  "required_disclosures": {
+    "contains_synthetic_media": "本内容包含AI辅助生成素材"
+  }
+}

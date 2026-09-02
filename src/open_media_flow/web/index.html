@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#e8572a" />
+    <title>OpenMediaFlow · Local Broadcast Desk</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23161713'/%3E%3Cpath d='M14 18h36v28H14z' fill='%23e8572a'/%3E%3Cpath d='M22 25h20v4H22zm0 10h13v4H22z' fill='%23f1efe8'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="OpenMediaFlow 首页">
+        <span class="brand-mark">OMF</span>
+        <span class="brand-copy"><b>OpenMediaFlow</b><small>LOCAL BROADCAST DESK</small></span>
+      </a>
+      <div class="topbar-actions">
+        <span class="connection-chip"><i id="top-health-dot"></i><span id="top-health-status">连接中</span></span>
+        <span class="local-clock" id="local-clock">--:--:-- CST</span>
+        <button class="icon-button" id="refresh-button" type="button" aria-label="刷新数据">↻</button>
+        <a class="text-link" href="/docs" target="_blank" rel="noreferrer">API DOCS ↗</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero reveal">
+        <div class="hero-title">
+          <p class="eyebrow">SYSTEM 05 / LOCAL-FIRST CONTENT OPERATIONS</p>
+          <h1>内容在这里流动，<br /><em>账号留在本地。</em></h1>
+          <p class="hero-summary">一套从创意、生成、审核到分发的本地内容操作系统。</p>
+        </div>
+        <div class="hero-note">
+          <span class="crosshair" aria-hidden="true">＋</span>
+          <p>从选题、脚本、视频、审核到发布门禁，<br />一张桌面看清整个内容生产线。</p>
+          <div class="platform-line" aria-label="支持的平台">
+            <span>抖音</span><span>小红书</span><span>哔哩哔哩</span><span>YouTube</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="signal-strip reveal delay-1" aria-label="系统状态">
+        <article class="signal-card signal-card-dark">
+          <span class="signal-index">01</span>
+          <div><small>CONTROL PLANE</small><strong id="health-status">连接中</strong></div>
+          <i class="pulse-dot" id="health-dot"></i>
+        </article>
+        <article class="signal-card">
+          <span class="signal-index">02</span>
+          <div><small>LOCAL MODEL</small><strong id="model-status">—</strong></div>
+          <span class="signal-meta" id="fallback-status">LOCAL ONLY</span>
+        </article>
+        <article class="signal-card">
+          <span class="signal-index">03</span>
+          <div><small>SCHEDULER</small><strong id="scheduler-status">—</strong></div>
+          <span class="signal-meta" id="store-status">POSTGRES</span>
+        </article>
+        <article class="signal-card signal-card-accent">
+          <span class="signal-index">04</span>
+          <div><small>PUBLISH GATE</small><strong id="publish-status">—</strong></div>
+          <span class="signal-meta">SAFE MODE</span>
+        </article>
+      </section>
+
+      <section class="workspace reveal delay-2">
+        <div class="panel panel-main">
+          <div class="panel-heading">
+            <div><p class="section-number">A / AUTOMATIONS</p><h2>自动化计划 <sup id="plan-count">0</sup></h2><p class="panel-description">管理内容主题、运行频率与目标平台。</p></div>
+            <button class="primary-button" id="open-create-button" type="button"><span>＋</span> 新建计划</button>
+          </div>
+          <div class="automation-list" id="automation-list">
+            <div class="empty-state">正在读取本地计划…</div>
+          </div>
+        </div>
+
+        <aside class="panel panel-side">
+          <div class="panel-heading compact">
+            <div><p class="section-number">B / SIGNAL</p><h2>运行信号</h2><p class="panel-description">当前生产线的即时负载。</p></div>
+          </div>
+          <div class="signal-board">
+            <div class="big-number" id="active-count">00</div>
+            <p>ACTIVE FLOWS</p>
+            <div class="meter"><i id="activity-meter"></i></div>
+          </div>
+          <dl class="system-list">
+            <div><dt>任务总数</dt><dd id="task-count">0</dd></div>
+            <div><dt>等待处理</dt><dd id="pending-count">0</dd></div>
+            <div><dt>已完成</dt><dd id="complete-count">0</dd></div>
+            <div><dt>需要处理</dt><dd id="failed-count">0</dd></div>
+          </dl>
+          <button class="secondary-button full" id="connect-settings-button" type="button">本地连接设置</button>
+        </aside>
+      </section>
+
+      <section class="ledger reveal delay-3">
+        <div class="ledger-heading">
+          <div><p class="section-number">C / EXECUTION LEDGER</p><h2>执行账本</h2></div>
+          <div class="tab-list" role="tablist">
+            <button class="tab is-active" data-tab="runs" type="button" role="tab" aria-selected="true" aria-controls="runs-pane">运行记录</button>
+            <button class="tab" data-tab="tasks" type="button" role="tab" aria-selected="false" aria-controls="tasks-pane">内容任务</button>
+          </div>
+        </div>
+        <div class="table-shell" id="runs-pane">
+          <table><thead><tr><th>状态</th><th>计划 / 任务</th><th>创建时间</th><th>说明</th><th></th></tr></thead><tbody id="runs-table"></tbody></table>
+        </div>
+        <div class="table-shell is-hidden" id="tasks-pane">
+          <table><thead><tr><th>状态</th><th>主题</th><th>平台</th><th>进度</th><th>更新时间</th><th></th></tr></thead><tbody id="tasks-table"></tbody></table>
+        </div>
+      </section>
+    </main>
+
+    <dialog class="modal" id="connect-modal">
+      <form method="dialog" id="connect-form" class="modal-card connect-card">
+        <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+        <p class="section-number">LOCAL HANDSHAKE</p>
+        <h2>连接本地控制面</h2>
+        <p class="modal-copy">本地页面会自动连接，无需手动输入。只有自动连接失效时，才需要在这里提供备用 API KEY。</p>
+        <label>本地 API KEY<input id="api-key-input" type="password" autocomplete="off" placeholder="粘贴 .env 中的 OMF_API_KEY" required /></label>
+        <p class="form-error" id="connect-error" role="alert"></p>
+        <button class="primary-button full" type="submit">保存并连接 <span>→</span></button>
+        <button class="text-button clear-key-button" id="clear-api-key-button" type="button" hidden>清除已保存密钥</button>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="create-modal">
+      <form method="dialog" id="create-form" class="modal-card create-card">
+        <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+        <p class="section-number">NEW AUTOMATION</p>
+        <h2>创建内容计划</h2>
+        <div class="form-grid">
+          <label>计划名称<input name="name" required minlength="2" placeholder="例如：每日 AI 工具观察" /></label>
+          <label>执行间隔<select name="interval_minutes"><option value="60">每小时</option><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440" selected>每天</option><option value="10080">每周</option></select></label>
+          <label class="span-2">内容主题<textarea name="topic" required minlength="2" rows="3" placeholder="描述希望持续生成的内容方向"></textarea></label>
+          <fieldset class="span-2"><legend>发布平台</legend><div class="platform-options"><label><input type="checkbox" name="platforms" value="douyin" checked /><span>抖音</span></label><label><input type="checkbox" name="platforms" value="xiaohongshu" checked /><span>小红书</span></label><label><input type="checkbox" name="platforms" value="bilibili" checked /><span>哔哩哔哩</span></label><label><input type="checkbox" name="platforms" value="youtube" checked /><span>YouTube</span></label></div></fieldset>
+          <label class="span-2">备用本地素材 <small>可选；媒体生成不可用时才用于人工合成</small><textarea name="materials" rows="3" placeholder="每行一个，相对于 data/inbox"></textarea></label>
+          <label class="switch-row span-2"><span><b>创建后立即启用</b><small>关闭时只保存计划，不会自动执行</small></span><input name="enabled" type="checkbox" /><i></i></label>
+        </div>
+        <p class="form-error" id="create-error" role="alert"></p>
+        <div class="modal-actions"><button class="text-button" value="cancel" type="button" data-close-modal>取消</button><button class="primary-button" type="submit">保存计划 <span>→</span></button></div>
+      </form>
+    </dialog>
+
+    <dialog class="modal detail-modal" id="detail-modal">
+      <div class="modal-card detail-card">
+        <button class="modal-close" data-close-detail aria-label="关闭">×</button>
+        <p class="section-number">TASK INSPECTION</p>
+        <div id="detail-content"></div>
+      </div>
+    </dialog>
+
+    <dialog class="modal" id="delete-modal">
+      <div class="modal-card confirm-card">
+        <p class="section-number">DELETE AUTOMATION</p>
+        <h2>删除这个计划？</h2>
+        <p class="modal-copy">计划“<b id="delete-plan-name"></b>”及其定时调度将被删除；已经生成的任务和内容不会删除。</p>
+        <div class="modal-actions"><button class="text-button" type="button" data-close-delete>取消</button><button class="danger-button" id="confirm-delete-button" type="button">确认删除</button></div>
+      </div>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>

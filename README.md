@@ -1,0 +1,225 @@
+# OpenMediaFlow
+
+> Plan, generate, review, and publish everywhere — locally.
+
+OpenMediaFlow 是一个本地优先的全自动内容运营项目，目标平台为抖音、小红书、
+哔哩哔哩和 YouTube。v0.6 已把“内容生成”提升为主链路：系统先生成完整内容包和分镜，
+再生成封面、视频镜头与旁白，完成合成、审核，最后进入多平台发布门禁。
+
+真实发布仍固定为 `dry-run`，不会改动任何外部账号。平台 OAuth、Cookie 和验证码接管
+应在生成与审核链路稳定后分别接入。
+
+## 架构
+
+```text
+主题与运营目标
+  → Qwen：标题 / 脚本 / 标签 / 受众 / Hook / 分镜 / 视觉提示词
+  → ComfyUI：封面 + 每个分镜的视频镜头
+  → macOS 原生媒体运行时：中文旁白
+  → 内置 MoneyPrinterTurbo：镜头 / 配音 / 字幕 / 转场合成
+  → FFprobe + 规则 + LLM 多模态审核门禁
+  → 抖音 / 小红书 / B站 / YouTube 发布适配器
+  → 数据回流与下一轮选题（待接入平台授权）
+```
+
+核心组件：
+
+- `api`：任务、自动化、审核和发布控制面。
+- `APScheduler + PostgreSQL + Redis`：内置编排、持久化和防重复锁，不依赖 n8n。
+- `llama.cpp`：本地 Qwen 文本策划；可替换为任意 OpenAI-compatible 端点。
+- `ComfyUIProvider`：本地图片和视频生成接口；工作流随项目版本管理。
+- `local_media_runtime`：运行在 macOS 宿主机，调用系统语音和硬件能力。
+- `video-engine`：项目内嵌的 MoneyPrinterTurbo 合成引擎。
+- `MinIO`：预留的产物归档服务。
+
+Docker 负责隔离服务，不会自动带来模型，也无法在 macOS 上直接获得 Metal/MPS GPU。
+因此数据库、API 和合成引擎运行在 Docker；LLM、ComfyUI 和系统中文语音运行在宿主机，
+但它们的启动脚本、配置、工作流和产物仍全部由本项目管理。
+
+## 单项目边界
+
+```text
+open-media-flow/
+├── src/open_media_flow/       # API、状态机、模型路由、媒体 Provider、审核
+├── services/video-engine/     # 内置 MoneyPrinterTurbo 源码
+├── scripts/                   # 本机 LLM 与媒体运行时启动脚本
+├── config/workflows/          # ComfyUI API 工作流
+├── config/policy.json         # 审核规则
+└── data/                      # 模型、生成素材、音频、视频与运行期数据
+```
+
+项目不再读取 `../MoneyPrinterTurbo`。内置版本来源和本地修改见
+`services/video-engine/UPSTREAM.md`。
+
+## 当前可用状态
+
+- 已可用：Qwen 完整内容包与分镜、Postgres 自动状态机、本机中文 TTS、视频合成、
+  ComfyUI 图片/视频生成、FFprobe/规则/LLM 审核、dry-run 发布。
+- 已选本机模型：SDXL Turbo 负责封面，LTX-Video 2B distilled 负责竖屏视频镜头；模型
+  权重和 ComfyUI 运行时均保存在 `data/comfyui`。
+- 首次真实验证完成前，`.env` 保持 `OMF_MEDIA_GENERATION_ENABLED=false`。自动任务会在
+  `planned` 状态安全等待，不会悄悄回退成“拿库存素材假装 AI 生成”。验证完成后再启用。
+- `video_materials` 仅是可选的人工回退输入，不再是自动化计划的必填项。
+
+## 启动
+
+首次配置：
+
+```bash
+cp .env.example .env
+```
+
+至少修改 `.env` 中标记为 `change-me` 的本地密码。然后分别启动宿主机运行时：
+
+```bash
+# 终端 1：本地 Qwen；首次运行会下载约 9GB GGUF，之后复用 data/models
+./scripts/start-llm.sh
+
+# 终端 2：macOS 中文配音运行时
+./scripts/start-media-runtime.sh
+
+# 终端 3：项目内 ComfyUI MPS 运行时
+./scripts/start-comfyui.sh
+```
+
+最后启动容器服务：
+
+```bash
+docker compose up -d --build
+```
+
+入口：
+
+- 控制台：http://127.0.0.1:8000/
+- OpenMediaFlow API：http://127.0.0.1:8000/docs
+- 内置视频引擎：http://127.0.0.1:8082/docs
+- 本机媒体运行时：http://127.0.0.1:8090/health
+- MinIO：http://127.0.0.1:9001
+
+不需要注册或登录工作流平台。控制台首次连接时粘贴 `.env` 中的 `OMF_API_KEY`；密钥
+只保存在当前浏览器标签页。
+
+## 自动流程
+
+载入本地 API 密钥：
+
+```bash
+set -a
+source .env
+set +a
+```
+
+创建一个默认禁用的计划，先验证单次运行：
+
+```bash
+curl -X POST http://127.0.0.1:8000/automations \
+  -H 'Content-Type: application/json' \
+  -H "X-API-Key: $OMF_API_KEY" \
+  -d '{
+    "name": "每日 AI 工具观察",
+    "topic": "值得普通用户关注的本地 AI 工具",
+    "platforms": ["douyin", "xiaohongshu", "bilibili", "youtube"],
+    "interval_minutes": 1440,
+    "enabled": false
+  }'
+```
+
+立即触发：
+
+```bash
+curl -X POST http://127.0.0.1:8000/automations/<automation-id>/run \
+  -H "X-API-Key: $OMF_API_KEY"
+```
+
+状态机会依次经过：
+
+```text
+draft → planned → assets_generating → composing → generated
+      → approved / review_rejected → published / partial_failure
+```
+
+在媒体模型尚未启用时，流程停在 `planned`，运行记录显示
+`waiting_for_media_runtime`。安装模型和工作流后将 `OMF_MEDIA_GENERATION_ENABLED=true`，
+重启 API，已有任务会继续推进。
+
+## 手动验证内容策划
+
+创建任务后调用完整内容包生成接口：
+
+```text
+POST /tasks
+POST /tasks/{id}/generate-content-plan
+GET  /tasks/{id}
+```
+
+响应中的 `content_plan` 包含受众、Hook、创意方向、封面提示词和 3–12 个分镜。
+`metadata.llm_generation` 记录实际模型和端点，但不会记录 API Key。
+
+旧的手动合成接口仍保留：
+
+```text
+POST /tasks/{id}/generate-metadata
+POST /tasks/{id}/generate-video
+POST /tasks/{id}/media
+POST /tasks/{id}/audit
+POST /tasks/{id}/publish
+```
+
+人工素材路径相对于 `data/inbox`，服务端会阻止目录穿越。生成产物写入
+`data/output/video-engine`。
+
+## 模型端点
+
+主链路统一调用 `/v1/chat/completions`，可使用 llama.cpp、LM Studio、Ollama、
+MLX-LM 或兼容服务。
+
+OpenRouter 只在明确启用后作为回退：
+
+```env
+LLM_FALLBACK_ENABLED=true
+LLM_FALLBACK_BASE_URL=https://openrouter.ai/api/v1
+LLM_FALLBACK_MODEL=<model-slug>
+LLM_FALLBACK_API_KEY=<OPENROUTER_API_KEY>
+OPENROUTER_ZDR=true
+OPENROUTER_DATA_COLLECTION=deny
+```
+
+Hugging Face Inference Providers 也可作为 OpenAI-compatible 回退端点：
+
+```env
+LLM_FALLBACK_ENABLED=true
+LLM_FALLBACK_BASE_URL=https://router.huggingface.co/v1
+LLM_FALLBACK_MODEL=<organization>/<model>:fastest
+LLM_FALLBACK_API_KEY=<HF_TOKEN>
+```
+
+默认仅将 Hugging Face 用作本地模型仓库，不进入在线推理主链路。
+
+## ComfyUI 工作流接口
+
+Provider 读取：
+
+- `config/workflows/image.json`
+- `config/workflows/video.json`
+
+工作流必须以 ComfyUI 的 API Format 导出，并可使用
+`{{PROMPT}}`、`{{NEGATIVE_PROMPT}}`、`{{WIDTH}}`、`{{HEIGHT}}`、
+`{{DURATION_SECONDS}}`、`{{FRAME_COUNT}}`、`{{SEED}}`、
+`{{FILENAME_PREFIX}}` 占位符。详细说明见 `config/workflows/README.md`。
+
+## 安全边界
+
+- 默认发布器始终是 `dry-run`。
+- 媒体和自定义旁白只能来自项目 `data/inbox` 白名单目录。
+- 不把 Cookie、OAuth token、平台密码写入仓库或自动化内容。
+- OpenRouter 默认关闭；启用时默认请求 ZDR 并禁止数据采集路由。
+- 小红书、抖音的非官方浏览器自动化需要独立 Profile，并保留扫码/验证码人工接管。
+- 正式发布前需分别实现官方 API 适配、幂等键、作品 ID 回查、失败告警与撤回策略。
+
+## 开发验证
+
+```bash
+.venv/bin/pytest -q
+.venv/bin/ruff check src tests
+docker compose config
+```
