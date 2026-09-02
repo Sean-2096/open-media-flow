@@ -16,3 +16,6 @@ data/video-engine/*
 data/output/video-engine/*
 data/comfyui/*
 !data/comfyui/README.md
+
+# macOS / editor
+.DS_Store
