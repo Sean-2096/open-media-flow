@@ -1,4 +1,10 @@
-from .base import GenerationRequest, MediaGenerationError, MediaJob, MediaJobStatus
+from .base import (
+    GenerationRequest,
+    MediaGenerationError,
+    MediaJob,
+    MediaJobStatus,
+    MediaRuntimeUnavailableError,
+)
 from .comfyui import ComfyUIProvider
 
 __all__ = [
@@ -7,4 +13,5 @@ __all__ = [
     "MediaGenerationError",
     "MediaJob",
     "MediaJobStatus",
+    "MediaRuntimeUnavailableError",
 ]

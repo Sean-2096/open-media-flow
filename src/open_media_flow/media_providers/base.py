@@ -11,6 +11,10 @@ class MediaGenerationError(RuntimeError):
     pass
 
 
+class MediaRuntimeUnavailableError(MediaGenerationError):
+    """The provider could not be reached; the existing job may still be running."""
+
+
 @dataclass(frozen=True)
 class GenerationRequest:
     task_id: str

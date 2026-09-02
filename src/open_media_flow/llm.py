@@ -16,11 +16,30 @@ class LLMError(RuntimeError):
     """Safe LLM error that never includes an API key or full request payload."""
 
 
+class ContentPackageValidationError(LLMError):
+    """Structured package failed validation and can be repaired by the model."""
+
+    def __init__(
+        self,
+        endpoint: str,
+        validation_error: ValidationError,
+        invalid_package: dict[str, Any],
+    ):
+        self.endpoint = endpoint
+        self.invalid_package = invalid_package
+        self.feedback = _validation_feedback(validation_error)
+        super().__init__(f"{endpoint} returned invalid content package: {self.feedback}")
+
+
 class GeneratedMetadata(BaseModel):
     title: str = Field(min_length=2, max_length=200)
-    script: str = Field(min_length=180, max_length=450)
+    script: str = Field(min_length=60, max_length=450)
     description: str = Field(min_length=2, max_length=5_000)
     tags: list[str] = Field(min_length=1, max_length=30)
+
+
+class GeneratedStandaloneMetadata(GeneratedMetadata):
+    script: str = Field(min_length=180, max_length=450)
 
 
 class GeneratedContentPackage(GeneratedMetadata):
@@ -72,7 +91,7 @@ def _metadata_prompt(task: ContentTask) -> tuple[str, str]:
     user = f"""
 根据以下信息生成发布素材：
 主题：{task.topic}
-目标平台：{', '.join(platform.value for platform in task.platforms)}
+目标平台：{", ".join(platform.value for platform in task.platforms)}
 
 要求：
 1. title 适合中文内容平台，不超过 200 字。
@@ -90,16 +109,18 @@ def _content_plan_prompt(task: ContentTask) -> tuple[str, str]:
         "你必须同时完成发布文案、完整旁白、封面提示词和可独立生成的分镜设计。"
         "每个 visual_prompt 必须用具体英文描述主体、动作、场景、镜头、光线和风格，"
         "不能要求生成模型绘制字幕、Logo 或界面文字。"
-        "script 必须为 180 到 450 个中文字符，并与所有分镜 narration 的内容和顺序一致。"
+        "script 必须为 60 到 450 个中文字符，建议 100 到 180 字，"
+        "并与所有分镜 narration 的内容和顺序一致。"
+        "严格使用下面给出的字段名和类型；duration_seconds 必须是整数，kind 必须是 video。"
         "避免无法验证的事实、收益承诺、医疗金融建议和版权角色。"
     )
     user = f"""
 主题：{task.topic}
-目标平台：{', '.join(platform.value for platform in task.platforms)}
+目标平台：{", ".join(platform.value for platform in task.platforms)}
 
 输出 JSON 字段：
 - title：中文标题，不超过 200 字
-- script：完整中文旁白，180 到 450 字
+- script：完整中文旁白，60 到 450 字，建议 100 到 180 字
 - description：发布简介，结尾必须包含“本内容包含AI辅助生成素材”
 - tags：3 到 8 个不带井号的标签
 - audience：目标受众
@@ -113,6 +134,73 @@ def _content_plan_prompt(task: ContentTask) -> tuple[str, str]:
   - negative_prompt：需要避免的画面问题，英文
   - duration_seconds：3 到 8 秒
   - kind：固定为 video
+
+提交前逐项自检：script 为 60–450 个字符；shots 为 4–6 项；所有必填字段非空；
+order 从 1 连续递增；duration_seconds 为 3–8 的整数；kind 只能是 "video"。
+
+只返回一个 JSON 对象，结构示例：
+{{
+  "title": "示例标题",
+  "script": "适合 12 到 48 秒竖屏短视频的完整旁白，建议 100 到 180 个中文字符",
+  "description": "发布简介。本内容包含AI辅助生成素材",
+  "tags": ["标签一", "标签二", "标签三"],
+  "audience": "目标受众",
+  "hook": "前 3 秒钩子",
+  "creative_direction": "统一画面风格与镜头规则",
+  "cover_prompt": "vertical cinematic cover, subject, action, lighting, no text",
+  "shots": [
+    {{
+      "order": 1,
+      "narration": "该镜头对应的中文旁白",
+      "visual_prompt": "detailed English visual prompt with subject, action, scene, camera and light",
+      "negative_prompt": "text, logo, watermark, blur",
+      "duration_seconds": 5,
+      "kind": "video"
+    }}
+  ]
+}}
+""".strip()
+    return system, user
+
+
+def _validation_feedback(error: ValidationError) -> str:
+    issues: list[str] = []
+    for item in error.errors(include_url=False, include_input=False)[:6]:
+        location = ".".join(str(part) for part in item["loc"])
+        issues.append(f"字段 {location}: {item['msg']}")
+    return "；".join(issues)[:700]
+
+
+def _content_plan_repair_prompt(
+    task: ContentTask,
+    failure: ContentPackageValidationError,
+) -> tuple[str, str]:
+    system = (
+        "你是 JSON 内容包修复器。根据校验反馈修正已有内容包，"
+        "只返回修正后的完整 JSON 对象，不要解释，不要输出 Markdown。"
+        "必须保留原主题和核心创意，不得省略任何字段。"
+    )
+    invalid_json = json.dumps(
+        failure.invalid_package,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )[:16_000]
+    user = f"""
+主题：{task.topic}
+目标平台：{", ".join(platform.value for platform in task.platforms)}
+
+校验反馈：
+{failure.feedback}
+
+需要修复的 JSON：
+{invalid_json}
+
+修复规则：
+1. 返回完整 JSON，而不是补丁。
+2. script 必须为 60–450 个字符，建议修复到 100–180 字以匹配短视频时长。
+3. shots 必须为 4–6 项，order 从 1 连续递增。
+4. 每个分镜必须有 narration、英文 visual_prompt、negative_prompt、整数 duration_seconds 和 kind="video"。
+5. description 结尾必须保留“本内容包含AI辅助生成素材”。
 """.strip()
     return system, user
 
@@ -149,7 +237,7 @@ class OpenAICompatibleClient:
         system, user = _metadata_prompt(task)
         raw_metadata = self._request_json(system, user)
         try:
-            metadata = GeneratedMetadata.model_validate(raw_metadata)
+            metadata = GeneratedStandaloneMetadata.model_validate(raw_metadata)
         except ValidationError as exc:
             raise LLMError(f"{self.endpoint.name} returned invalid structured output") from exc
 
@@ -164,10 +252,29 @@ class OpenAICompatibleClient:
             raise LLMError(f"{self.endpoint.name} model is not configured")
         system, user = _content_plan_prompt(task)
         raw_package = self._request_json(system, user)
+        return self._validate_content_package(raw_package)
+
+    def repair_content_plan(
+        self,
+        task: ContentTask,
+        failure: ContentPackageValidationError,
+    ) -> LLMGeneration:
+        system, user = _content_plan_repair_prompt(task, failure)
+        raw_package = self._request_json(system, user)
+        return self._validate_content_package(raw_package)
+
+    def _validate_content_package(
+        self,
+        raw_package: dict[str, Any],
+    ) -> LLMGeneration:
         try:
             package = GeneratedContentPackage.model_validate(raw_package)
         except ValidationError as exc:
-            raise LLMError(f"{self.endpoint.name} returned invalid content package") from exc
+            raise ContentPackageValidationError(
+                self.endpoint.name,
+                exc,
+                raw_package,
+            ) from exc
         metadata = GeneratedMetadata.model_validate(package.model_dump())
         plan = ContentPlan(
             audience=package.audience,
@@ -193,11 +300,11 @@ class OpenAICompatibleClient:
         )
         user = f"""
 审核以下待发布内容：
-平台：{', '.join(platform.value for platform in task.platforms)}
+平台：{", ".join(platform.value for platform in task.platforms)}
 标题：{task.title}
 脚本：{task.script}
 简介：{task.description}
-标签：{', '.join(task.tags)}
+标签：{", ".join(task.tags)}
 
 输出字段：
 - score：0 到 100，越高越适合发布
@@ -228,9 +335,7 @@ class OpenAICompatibleClient:
             "response_format": {"type": "json_object"},
         }
         if self.endpoint.enable_thinking is not None:
-            body["chat_template_kwargs"] = {
-                "enable_thinking": self.endpoint.enable_thinking
-            }
+            body["chat_template_kwargs"] = {"enable_thinking": self.endpoint.enable_thinking}
         if "openrouter.ai" in self.endpoint.base_url:
             body["provider"] = {
                 "zdr": self.openrouter_zdr,
@@ -253,9 +358,7 @@ class OpenAICompatibleClient:
             content = result["choices"][0]["message"]["content"]
             structured = json.loads(_strip_code_fence(content))
         except urllib.error.HTTPError as exc:
-            raise LLMError(
-                f"{self.endpoint.name} returned HTTP {exc.code}"
-            ) from exc
+            raise LLMError(f"{self.endpoint.name} returned HTTP {exc.code}") from exc
         except urllib.error.URLError as exc:
             raise LLMError(f"{self.endpoint.name} is unreachable") from exc
         except TimeoutError as exc:
@@ -301,9 +404,16 @@ class FallbackLLMRouter:
 
     def generate_content_plan(self, task: ContentTask) -> LLMGeneration:
         errors: list[str] = []
+        validation_failure: ContentPackageValidationError | None = None
         for _ in range(self.primary_attempts):
             try:
+                repair = getattr(self.primary, "repair_content_plan", None)
+                if validation_failure is not None and callable(repair):
+                    return repair(task, validation_failure)
                 return self.primary.generate_content_plan(task)
+            except ContentPackageValidationError as exc:
+                validation_failure = exc
+                errors.append(str(exc))
             except LLMError as exc:
                 errors.append(str(exc))
         if self.fallback is not None:

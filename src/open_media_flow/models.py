@@ -31,6 +31,7 @@ class TaskStatus(StrEnum):
     PUBLISHED = "published"
     PARTIAL_FAILURE = "partial_failure"
     AUTOMATION_FAILED = "automation_failed"
+    CANCELLED = "cancelled"
 
 
 class TaskCreate(BaseModel):
@@ -105,6 +106,13 @@ class PublishResult(BaseModel):
     published_at: datetime = Field(default_factory=utc_now)
 
 
+class TaskEvent(BaseModel):
+    stage: str
+    status: str
+    detail: str
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class ContentTask(TaskCreate):
     id: str = Field(default_factory=lambda: uuid4().hex)
     status: TaskStatus = TaskStatus.DRAFT
@@ -119,6 +127,7 @@ class ContentTask(TaskCreate):
     audio_path: str | None = None
     audit: AuditReport | None = None
     publish_results: list[PublishResult] = Field(default_factory=list)
+    events: list[TaskEvent] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)

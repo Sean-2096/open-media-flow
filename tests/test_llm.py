@@ -3,6 +3,7 @@ import json
 import pytest
 
 from open_media_flow.llm import (
+    ContentPackageValidationError,
     FallbackLLMRouter,
     GeneratedMetadata,
     LLMError,
@@ -88,6 +89,30 @@ def review_generation(score, endpoint="primary", risk_level="low"):
         endpoint=endpoint,
         model="review-model",
     )
+
+
+def content_package():
+    return {
+        **metadata().model_dump(),
+        "audience": "喜欢竖屏故事的年轻观众",
+        "hook": "他以为门外没人，手机却响了。",
+        "creative_direction": "低饱和电影感，快速切镜，结尾用暖光完成情绪反转。",
+        "cover_prompt": "vertical cinematic hallway, young man, warm rim light, no text",
+        "shots": [
+            {
+                "order": index,
+                "narration": f"这是第{index}个镜头对应的完整中文旁白内容。",
+                "visual_prompt": (
+                    "cinematic vertical shot, young man in an apartment hallway, "
+                    "natural movement, handheld camera, soft dramatic lighting"
+                ),
+                "negative_prompt": "text, logo, watermark, blur",
+                "duration_seconds": 5,
+                "kind": "video",
+            }
+            for index in range(1, 5)
+        ],
+    }
 
 
 def test_primary_retries_before_fallback():
@@ -204,9 +229,7 @@ def test_invalid_structured_output_is_safe_error(monkeypatch):
 
 def test_local_endpoint_can_disable_qwen_thinking(monkeypatch):
     captured = {}
-    response_payload = {
-        "choices": [{"message": {"content": metadata().model_dump_json()}}]
-    }
+    response_payload = {"choices": [{"message": {"content": metadata().model_dump_json()}}]}
 
     def fake_urlopen(request, timeout):
         captured["body"] = json.loads(request.data.decode("utf-8"))
@@ -225,6 +248,76 @@ def test_local_endpoint_can_disable_qwen_thinking(monkeypatch):
 
     client.generate_metadata(task())
 
-    assert captured["body"]["chat_template_kwargs"] == {
-        "enable_thinking": False
-    }
+    assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_content_plan_validation_error_includes_failing_field(monkeypatch):
+    invalid = {**content_package(), "script": "太短"}
+    payload = {"choices": [{"message": {"content": json.dumps(invalid, ensure_ascii=False)}}]}
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse(payload))
+    client = OpenAICompatibleClient(
+        LLMEndpointSettings(
+            name="primary",
+            base_url="http://127.0.0.1:8081/v1",
+            model="local",
+            api_key="local",
+        )
+    )
+
+    with pytest.raises(ContentPackageValidationError, match="字段 script"):
+        client.generate_content_plan(task())
+
+
+def test_content_plan_accepts_short_video_length_script(monkeypatch):
+    package = content_package()
+    package["script"] = (
+        "门铃响了三次，他却不敢开门。监控里空无一人，门外只放着一把旧伞。"
+        "他认出那是母亲生前常用的伞，打开门时，邻居递来一封迟到十年的信。"
+    )
+    payload = {"choices": [{"message": {"content": json.dumps(package, ensure_ascii=False)}}]}
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse(payload))
+    client = OpenAICompatibleClient(
+        LLMEndpointSettings(
+            name="primary",
+            base_url="http://127.0.0.1:8081/v1",
+            model="local",
+            api_key="local",
+        )
+    )
+
+    result = client.generate_content_plan(task())
+
+    assert result.plan is not None
+    assert 60 <= len(result.metadata.script) < 180
+
+
+def test_content_plan_retry_repairs_invalid_package(monkeypatch):
+    captured_bodies = []
+    invalid = {**content_package(), "script": "太短", "shots": []}
+    responses = [invalid, content_package()]
+
+    def fake_urlopen(request, timeout):
+        captured_bodies.append(json.loads(request.data.decode("utf-8")))
+        content = json.dumps(responses[len(captured_bodies) - 1], ensure_ascii=False)
+        return FakeResponse({"choices": [{"message": {"content": content}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = OpenAICompatibleClient(
+        LLMEndpointSettings(
+            name="primary",
+            base_url="http://127.0.0.1:8081/v1",
+            model="local",
+            api_key="local",
+        )
+    )
+    router = FallbackLLMRouter(client, primary_attempts=2)
+
+    result = router.generate_content_plan(task())
+
+    assert result.plan is not None
+    assert len(result.plan.shots) == 4
+    assert len(captured_bodies) == 2
+    repair_prompt = captured_bodies[1]["messages"][1]["content"]
+    assert "校验反馈" in repair_prompt
+    assert "字段 script" in repair_prompt
+    assert "字段 shots" in repair_prompt

@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from ..models import AssetKind
-from .base import GenerationRequest, MediaGenerationError, MediaJob, MediaJobStatus
+from .base import (
+    GenerationRequest,
+    MediaGenerationError,
+    MediaJob,
+    MediaJobStatus,
+    MediaRuntimeUnavailableError,
+)
 
 
 class ComfyUIProvider:
@@ -35,9 +41,7 @@ class ComfyUIProvider:
         if not self.workflows[kind].is_file():
             return False
         try:
-            with urllib.request.urlopen(
-                f"{self.base_url}/system_stats", timeout=3
-            ) as response:
+            with urllib.request.urlopen(f"{self.base_url}/system_stats", timeout=3) as response:
                 return response.status == 200
         except (OSError, urllib.error.URLError):
             return False
@@ -68,9 +72,7 @@ class ComfyUIProvider:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(
-                http_request, timeout=self.timeout_seconds
-            ) as response:
+            with urllib.request.urlopen(http_request, timeout=self.timeout_seconds) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
@@ -78,7 +80,7 @@ class ComfyUIProvider:
                 f"ComfyUI rejected workflow with HTTP {exc.code}: {detail}"
             ) from exc
         except (OSError, urllib.error.URLError) as exc:
-            raise MediaGenerationError("ComfyUI is unreachable") from exc
+            raise MediaRuntimeUnavailableError("ComfyUI is unreachable") from exc
         prompt_id = result.get("prompt_id")
         if not prompt_id:
             raise MediaGenerationError(f"ComfyUI did not return prompt_id: {result}")
@@ -91,14 +93,19 @@ class ComfyUIProvider:
             ) as response:
                 history = json.loads(response.read().decode("utf-8"))
         except (OSError, urllib.error.URLError) as exc:
-            raise MediaGenerationError("ComfyUI history endpoint is unreachable") from exc
+            raise MediaRuntimeUnavailableError("ComfyUI history endpoint is unreachable") from exc
         record = history.get(job_id)
         if not record:
-            return MediaJobStatus(state="processing")
+            if self._is_queued(job_id):
+                return MediaJobStatus(state="processing")
+            return MediaJobStatus(
+                state="failed",
+                error="ComfyUI job is missing from both queue and history",
+            )
         status = record.get("status") or {}
         if status.get("status_str") == "error" or status.get("completed") is False:
             messages = status.get("messages") or []
-            return MediaJobStatus(state="failed", error=str(messages)[-500:])
+            return MediaJobStatus(state="failed", error=self._format_error(messages))
         output = self._find_output(record.get("outputs") or {}, kind)
         if output is None:
             return MediaJobStatus(state="processing", progress=95)
@@ -110,6 +117,36 @@ class ComfyUIProvider:
         if not candidate.is_file():
             return MediaJobStatus(state="processing", progress=95)
         return MediaJobStatus(state="complete", progress=100, media_path=candidate)
+
+    def _is_queued(self, job_id: str) -> bool:
+        try:
+            with urllib.request.urlopen(
+                f"{self.base_url}/queue", timeout=self.timeout_seconds
+            ) as response:
+                queue = json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError) as exc:
+            raise MediaRuntimeUnavailableError("ComfyUI queue endpoint is unreachable") from exc
+        for key in ("queue_running", "queue_pending"):
+            for item in queue.get(key) or []:
+                if isinstance(item, list) and len(item) > 1 and str(item[1]) == job_id:
+                    return True
+        return False
+
+    @staticmethod
+    def _format_error(messages: list[Any]) -> str:
+        """Keep the actionable ComfyUI exception instead of a tensor dump tail."""
+        for message in reversed(messages):
+            if not isinstance(message, (list, tuple)) or len(message) < 2:
+                continue
+            event, detail = message[0], message[1]
+            if event != "execution_error" or not isinstance(detail, dict):
+                continue
+            node = detail.get("node_type") or "unknown node"
+            node_id = detail.get("node_id") or "?"
+            error_type = detail.get("exception_type") or "ExecutionError"
+            error_message = str(detail.get("exception_message") or "generation failed").strip()
+            return f"ComfyUI {node} node {node_id}: {error_type}: {error_message}"[:500]
+        return "ComfyUI generation failed without an actionable error message"
 
     @classmethod
     def _replace(cls, value: Any, replacements: dict[str, Any]) -> Any:

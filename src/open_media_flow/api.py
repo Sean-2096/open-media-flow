@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -153,9 +154,8 @@ def require_api_key(
     if not settings.api_key:
         return
     header_is_valid = hmac.compare_digest(x_api_key, settings.api_key)
-    session_is_valid = (
-        is_same_origin_dashboard_request(request)
-        and hmac.compare_digest(dashboard_session, dashboard_session_token())
+    session_is_valid = is_same_origin_dashboard_request(request) and hmac.compare_digest(
+        dashboard_session, dashboard_session_token()
     )
     if not header_is_valid and not session_is_valid:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid API key")
@@ -182,13 +182,28 @@ def get_task(task_id: str) -> ContentTask:
         raise HTTPException(status_code=404, detail="task not found") from exc
 
 
+def media_file_response(value: str | None, label: str) -> FileResponse:
+    if not value:
+        raise HTTPException(status_code=404, detail=f"{label} has not been generated")
+    try:
+        path = resolve_media_path(value, settings.allowed_media_roots)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"{label} not found") from exc
+    except UnsafeMediaPathError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type)
+
+
 @app.get("/health")
-def health() -> dict[str, str | bool]:
+def health() -> dict[str, str | bool | int]:
     return {
         "status": "ok",
         "publish_mode": settings.publish_mode,
         "llm_primary_model": settings.llm_primary.model,
         "llm_fallback_enabled": settings.llm_fallback_enabled,
+        "llm_primary_attempts": settings.llm_primary_attempts,
+        "automation_max_attempts": settings.automation_max_attempts,
         "scheduler_enabled": settings.scheduler_enabled,
         "scheduler_running": bool(automation_engine and automation_engine.running),
         "store_backend": settings.store_backend,
@@ -244,6 +259,18 @@ def create_automation(body: AutomationCreate) -> Automation:
 def list_automations() -> list[Automation]:
     engine = require_automation_engine()
     return engine.store.list_automations()
+
+
+@app.put(
+    "/automations/{automation_id}",
+    response_model=Automation,
+    dependencies=[Depends(require_api_key)],
+)
+def update_automation(automation_id: str, body: AutomationCreate) -> Automation:
+    try:
+        return require_automation_engine().update_automation(automation_id, body)
+    except AutomationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="automation not found") from exc
 
 
 @app.get(
@@ -312,6 +339,32 @@ def read_task(task_id: str) -> ContentTask:
 
 
 @app.post(
+    "/tasks/{task_id}/cancel",
+    response_model=ContentTask,
+    dependencies=[Depends(require_api_key)],
+)
+def cancel_task(task_id: str) -> ContentTask:
+    try:
+        return require_automation_engine().cancel_task(task_id)
+    except TaskNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+
+
+@app.post(
+    "/tasks/{task_id}/retry",
+    response_model=ContentTask,
+    dependencies=[Depends(require_api_key)],
+)
+def retry_task(task_id: str) -> ContentTask:
+    try:
+        return require_automation_engine().retry_task(task_id)
+    except TaskNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post(
     "/tasks/{task_id}/generate-metadata",
     response_model=ContentTask,
     dependencies=[Depends(require_api_key)],
@@ -372,7 +425,9 @@ def generate_video(task_id: str) -> ContentTask:
         task.generation_job_id = mpt.create_video(task)
         task.status = TaskStatus.GENERATED
     except (ValueError, OSError) as exc:
-        raise HTTPException(status_code=502, detail=f"MoneyPrinterTurbo request failed: {exc}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"MoneyPrinterTurbo request failed: {exc}"
+        ) from exc
     return store.save(task)
 
 
@@ -391,6 +446,38 @@ def attach_media(task_id: str, body: MediaAttach) -> ContentTask:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     task.status = TaskStatus.GENERATED
     return store.save(task)
+
+
+@app.get(
+    "/tasks/{task_id}/preview",
+    response_class=FileResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def preview_task_video(task_id: str) -> FileResponse:
+    return media_file_response(get_task(task_id).media_path, "final video")
+
+
+@app.get(
+    "/tasks/{task_id}/cover",
+    response_class=FileResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def preview_task_cover(task_id: str) -> FileResponse:
+    return media_file_response(get_task(task_id).cover_path, "cover")
+
+
+@app.get(
+    "/tasks/{task_id}/shots/{shot_id}/preview",
+    response_class=FileResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def preview_task_shot(task_id: str, shot_id: str) -> FileResponse:
+    task = get_task(task_id)
+    shots = task.content_plan.shots if task.content_plan else []
+    shot = next((item for item in shots if item.id == shot_id), None)
+    if shot is None:
+        raise HTTPException(status_code=404, detail="shot not found")
+    return media_file_response(shot.media_path, "shot media")
 
 
 @app.post(
