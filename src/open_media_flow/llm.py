@@ -47,6 +47,7 @@ class GeneratedContentPackage(GeneratedMetadata):
     hook: str = Field(min_length=5, max_length=300)
     creative_direction: str = Field(min_length=5, max_length=1_000)
     cover_prompt: str = Field(min_length=10, max_length=2_000)
+    character_reference_prompt: str = Field(min_length=10, max_length=2_000)
     shots: list[ShotSpec] = Field(min_length=3, max_length=12)
 
 
@@ -104,10 +105,38 @@ def _metadata_prompt(task: ContentTask) -> tuple[str, str]:
 
 
 def _content_plan_prompt(task: ContentTask) -> tuple[str, str]:
+    mode_rules = {
+        "narration": "所有分镜 presentation_mode 都必须是 narration，人物不得出现可见对白。",
+        "mixed": (
+            "安排 1 到 2 个 talking_head 分镜，其余为 narration；"
+            "talking_head 必须正面近景、嘴部完整可见、少遮挡、轻微头部运动，"
+            "源画面口部保持自然闭合，禁止自主说话动作。"
+        ),
+        "talking_head": (
+            "主要分镜使用 talking_head；必须正面近景、嘴部完整可见、少遮挡、"
+            "稳定机位和轻微头部运动；源画面口部保持自然闭合，禁止自主说话动作。"
+        ),
+    }
+    presentation_rule = mode_rules[task.presentation_mode.value]
+    character_framing_rule = (
+        "当呈现方式包含 talking_head 时，character_reference_prompt 必须生成写实真人腰部以上中景："
+        "人物约占画面一半、正面直视镜头、头肩完整、嘴唇自然闭合、牙齿不可见、无遮挡、柔和均匀打光、"
+        "纯净背景、固定机位；禁止动漫脸、夸张妆容、侧脸、低头和手部遮脸。"
+        if task.presentation_mode.value in {"mixed", "talking_head"}
+        else "character_reference_prompt 使用与内容一致的原创角色母版。"
+    )
     system = (
         "你是全自动短视频内容导演。只输出 JSON，不要输出 Markdown。"
-        "你必须同时完成发布文案、完整旁白、封面提示词和可独立生成的分镜设计。"
+        "你必须同时完成发布文案、完整旁白、角色母版提示词和连续一致的分镜设计。"
+        "narration 分镜采用旁白短片模式：人物不能对镜说话，画面中不得出现可见对白、夸张口型或持续张嘴；"
+        "人物面部出现时保持自然闭口或中性表情。talking_head 分镜会在后续独立执行音频口型同步，"
+        "源画面必须正脸清晰、嘴部无遮挡、机位稳定，并在整段源画面保持自然闭口，"
+        "禁止模型自行生成说话动作。"
+        "character_reference_prompt 必须用英文描述原创主体的固定身份、外观、服装、材质、色彩和画风；"
+        "旁白模式使用竖屏全身或半身角色母版，包含 talking_head 时必须改为写实真人腰部以上中景；"
+        "统一要求简单背景、中性闭口表情、无文字。"
         "每个 visual_prompt 必须用具体英文描述主体、动作、场景、镜头、光线和风格，"
+        "并重复角色母版中的稳定身份特征，只安排一个清晰动作和一个镜头运动；"
         "不能要求生成模型绘制字幕、Logo 或界面文字。"
         "script 必须为 60 到 450 个中文字符，建议 100 到 180 字，"
         "并与所有分镜 narration 的内容和顺序一致。"
@@ -117,6 +146,9 @@ def _content_plan_prompt(task: ContentTask) -> tuple[str, str]:
     user = f"""
 主题：{task.topic}
 目标平台：{", ".join(platform.value for platform in task.platforms)}
+呈现方式：{task.presentation_mode.value}
+呈现规则：{presentation_rule}
+角色母版规则：{character_framing_rule}
 
 输出 JSON 字段：
 - title：中文标题，不超过 200 字
@@ -127,16 +159,20 @@ def _content_plan_prompt(task: ContentTask) -> tuple[str, str]:
 - hook：前 3 秒钩子
 - creative_direction：统一的画面风格、色彩、节奏和镜头规则
 - cover_prompt：竖屏封面画面英文提示词，不包含文字
+- character_reference_prompt：原创主角的英文角色母版提示词；包含 talking_head 时使用写实真人腰部以上正面中景、人物约占画面一半、闭口、无遮挡；否则使用全身或半身母版
 - shots：4 到 6 个分镜，按顺序输出。每项包含：
   - order：从 1 开始的整数
   - narration：该镜头对应的中文旁白
-  - visual_prompt：可直接用于视频生成的详细英文提示词
+  - visual_prompt：可直接用于图生视频的详细英文提示词；重复主角固定特征，只描述旁白画面，不允许人物说话或张嘴
   - negative_prompt：需要避免的画面问题，英文
   - duration_seconds：3 到 8 秒
   - kind：固定为 video
+  - presentation_mode：只能是 narration 或 talking_head，并遵守上面的呈现规则
 
 提交前逐项自检：script 为 60–450 个字符；shots 为 4–6 项；所有必填字段非空；
-order 从 1 连续递增；duration_seconds 为 3–8 的整数；kind 只能是 "video"。
+order 从 1 连续递增；duration_seconds 为 3–8 的整数；kind 只能是 "video"；
+presentation_mode 必须符合呈现方式；
+character_reference_prompt 必填；所有分镜保持同一角色身份与画风，人物不得对镜说话。
 
 只返回一个 JSON 对象，结构示例：
 {{
@@ -148,14 +184,16 @@ order 从 1 连续递增；duration_seconds 为 3–8 的整数；kind 只能是
   "hook": "前 3 秒钩子",
   "creative_direction": "统一画面风格与镜头规则",
   "cover_prompt": "vertical cinematic cover, subject, action, lighting, no text",
+  "character_reference_prompt": "original young explorer, fixed facial features and outfit, full body character reference, neutral closed mouth, simple background, vertical composition, no text",
   "shots": [
     {{
       "order": 1,
       "narration": "该镜头对应的中文旁白",
-      "visual_prompt": "detailed English visual prompt with subject, action, scene, camera and light",
-      "negative_prompt": "text, logo, watermark, blur",
+      "visual_prompt": "same original young explorer with fixed facial features and outfit, one clear action, scene, camera and light, neutral closed mouth, voice-over scene",
+      "negative_prompt": "talking, speaking, open mouth, lip movement, text, logo, watermark, blur",
       "duration_seconds": 5,
-      "kind": "video"
+      "kind": "video",
+      "presentation_mode": "narration"
     }}
   ]
 }}
@@ -188,6 +226,7 @@ def _content_plan_repair_prompt(
     user = f"""
 主题：{task.topic}
 目标平台：{", ".join(platform.value for platform in task.platforms)}
+呈现方式：{task.presentation_mode.value}
 
 校验反馈：
 {failure.feedback}
@@ -199,8 +238,9 @@ def _content_plan_repair_prompt(
 1. 返回完整 JSON，而不是补丁。
 2. script 必须为 60–450 个字符，建议修复到 100–180 字以匹配短视频时长。
 3. shots 必须为 4–6 项，order 从 1 连续递增。
-4. 每个分镜必须有 narration、英文 visual_prompt、negative_prompt、整数 duration_seconds 和 kind="video"。
+4. 每个分镜必须有 narration、英文 visual_prompt、negative_prompt、整数 duration_seconds、kind="video" 和 presentation_mode。
 5. description 结尾必须保留“本内容包含AI辅助生成素材”。
+6. character_reference_prompt 必须是英文角色母版提示词；所有分镜重复稳定身份特征，并禁止可见说话和口型动作。
 """.strip()
     return system, user
 
@@ -281,6 +321,7 @@ class OpenAICompatibleClient:
             hook=package.hook,
             creative_direction=package.creative_direction,
             cover_prompt=package.cover_prompt,
+            character_reference_prompt=package.character_reference_prompt,
             shots=package.shots,
         )
         return LLMGeneration(

@@ -2,10 +2,11 @@ const apiKeyStorageKey = "omf_api_key";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const platformNames = { douyin: "抖音", xiaohongshu: "小红书", bilibili: "哔哩哔哩", youtube: "YouTube" };
-const statusNames = { draft: "等待策划", planned: "分镜已完成", assets_generating: "生成画面", composing: "合成视频", generated: "视频处理中", review_rejected: "审核拒绝", approved: "审核通过", publishing: "发布中", published: "已完成", partial_failure: "部分失败", automation_failed: "自动化失败", cancelled: "已取消", pending: "等待生成", queued: "已排队", running: "执行中", complete: "已完成", waiting_for_media_runtime: "等待媒体运行时", failed: "失败" };
+const statusNames = { draft: "等待策划", planned: "分镜已完成", assets_generating: "生成画面", lip_syncing: "同步口型", composing: "合成视频", generated: "视频处理中", review_rejected: "审核拒绝", approved: "审核通过", publishing: "发布中", published: "已完成", partial_failure: "部分失败", automation_failed: "自动化失败", cancelled: "已取消", pending: "等待生成", queued: "已排队", running: "执行中", complete: "已完成", skipped: "已降级", waiting_for_media_runtime: "等待媒体运行时", failed: "失败" };
 const terminalStatuses = new Set(["published", "review_rejected", "partial_failure", "automation_failed", "failed", "cancelled"]);
 const failureStatuses = new Set(["review_rejected", "partial_failure", "automation_failed", "failed"]);
-const timelineStages = ["策划", "素材", "配音", "合成", "审核", "发布"];
+const timelineStages = ["策划", "素材", "配音", "口型", "合成", "审核", "发布"];
+const presentationNames = { narration: "旁白镜头", mixed: "混合讲述", talking_head: "正面讲话" };
 const templates = {
   "ai-tools": { name: "每日 AI 工具观察", topic: "面向普通创作者，解读值得关注的本地 AI 工具、自动化实践和真实使用体验。", interval: "1440", platforms: ["douyin", "xiaohongshu", "bilibili", "youtube"] },
   knowledge: { name: "每周知识解读", topic: "把一个复杂知识点讲清楚，强调事实、结构、例子和可执行结论。", interval: "10080", platforms: ["bilibili", "youtube"] },
@@ -45,10 +46,17 @@ function formatTime(value) { return value ? new Intl.DateTimeFormat("zh-CN", { m
 function formatFullTime(value) { return value ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(value)) : "—"; }
 function formatElapsed(value) { const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000)); const hours = Math.floor(seconds / 3600); const minutes = Math.floor((seconds % 3600) / 60); const rest = seconds % 60; return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}` : `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`; }
 function formatDuration(start, end = new Date()) { if (!start) return "—"; const seconds = Math.max(0, Math.floor((new Date(end).getTime() - new Date(start).getTime()) / 1000)); if (seconds < 60) return `${seconds} 秒`; const minutes = Math.floor(seconds / 60); if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`; return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`; }
+function formatElapsedSeconds(value) { const seconds = Math.max(0, Math.floor(Number(value) || 0)); if (seconds < 60) return `${seconds} 秒`; const minutes = Math.floor(seconds / 60); return `${minutes} 分 ${seconds % 60} 秒`; }
 
 function badge(status) {
   const tone = ["published", "approved"].includes(status) ? "good" : failureStatuses.has(status) ? "bad" : status === "cancelled" ? "neutral" : "warn";
   return `<span class="status-badge status-${tone}">${escapeHtml(statusNames[status] || status)}</span>`;
+}
+
+function mediaProviderName(provider) {
+  if (!provider) return "等待分配引擎";
+  if (["comfyui", "rife-mlx", "qwen3-tts"].includes(provider)) return "OpenMediaFlow 本地引擎";
+  return provider;
 }
 
 function taskProgress(task) {
@@ -67,9 +75,10 @@ function taskProgress(task) {
   if (task.status === "assets_generating") {
     const shots = task.content_plan?.shots || [];
     const complete = shots.filter((shot) => shot.status === "complete").length;
-    return { value: Math.round(28 + (shots.length ? complete / shots.length : 0) * 42), kind: shots.length ? "素材实况" : "阶段估算" };
+    return { value: Math.round(28 + (shots.length ? complete / shots.length : 0) * 35), kind: shots.length ? "素材实况" : "阶段估算" };
   }
-  if (task.status === "composing") return { value: 74, kind: "阶段估算" };
+  if (task.status === "lip_syncing") return { value: Math.round(64 + Math.min(100, Number(task.metadata?.lip_sync_progress || 0)) * .12), kind: "口型实况" };
+  if (task.status === "composing") return { value: 78, kind: "阶段估算" };
   if (task.status === "approved") return { value: 94, kind: "阶段估算" };
   if (task.status === "publishing") return { value: 97, kind: "阶段估算" };
   return { value: 3, kind: "阶段估算" };
@@ -78,10 +87,10 @@ function taskProgress(task) {
 function taskStageIndex(status) {
   if (status === "draft") return 0;
   if (["planned", "assets_generating", "waiting_for_media_runtime"].includes(status)) return 1;
-  if (status === "composing") return 3;
-  if (status === "generated") return 3;
-  if (["approved", "review_rejected"].includes(status)) return 4;
-  return 5;
+  if (status === "lip_syncing") return 3;
+  if (["composing", "generated"].includes(status)) return 4;
+  if (["approved", "review_rejected"].includes(status)) return 5;
+  return 6;
 }
 
 function retryState(task) {
@@ -94,6 +103,7 @@ function retryState(task) {
 function retryTitle(retry) {
   if (retry.stage === "draft") return "内容方案未通过，正在自动修复";
   if (retry.stage === "assets_generating") return "素材生成遇到问题，正在自动恢复";
+  if (retry.stage === "lip_syncing") return "口型同步遇到问题，正在自动恢复";
   if (["composing", "generated"].includes(retry.stage)) return "视频合成遇到问题，正在自动恢复";
   return "自动编排遇到问题，正在重试";
 }
@@ -134,7 +144,7 @@ async function loadData({ quiet = false } = {}) {
 }
 
 function renderAll() {
-  renderHealth(); renderAutomations(); renderLedger(); renderSignalBoard(); renderRunDock(); renderAttention();
+  renderHealth(); renderAutomations(); renderLedger(); renderSignalBoard(); renderRunDock(); renderAttention(); renderRuntimeBanner();
   const detailModal = $("#detail-modal");
   if (detailModal.open && detailModal.dataset.taskId) {
     const task = state.tasks.find((item) => item.id === detailModal.dataset.taskId);
@@ -145,18 +155,28 @@ function renderAll() {
 
 function renderHealth() {
   const health = state.health || {};
-  $("#health-status").textContent = health.status === "ok" ? "运行正常" : "需要检查"; $("#health-dot").classList.toggle("online", health.status === "ok");
-  $("#top-health-status").textContent = health.status === "ok" ? "LOCAL ONLINE" : "CHECK SYSTEM"; $("#top-health-dot").classList.toggle("online", health.status === "ok");
+  const components = health.components || {};
+  $("#health-status").textContent = health.status === "ok" ? "运行正常" : "需要启动"; $("#health-dot").classList.toggle("online", health.status === "ok");
+  $("#top-health-status").textContent = health.status === "ok" ? "LOCAL ONLINE" : "START RUNTIME"; $("#top-health-dot").classList.toggle("online", health.status === "ok");
   $("#model-status").textContent = health.llm_primary_model || "未配置"; $("#fallback-status").textContent = health.llm_fallback_enabled ? "CLOUD FALLBACK" : "LOCAL ONLY";
-  $("#scheduler-status").textContent = health.scheduler_running ? "调度中" : "已停止"; $("#store-status").textContent = (health.store_backend || "—").toUpperCase();
+  $("#generation-status").textContent = health.generation_ready ? "画面与配音就绪" : components.generation_engine_ready ? "等待配音增强" : "尚未启动";
   $("#publish-status").textContent = health.publish_mode === "dry-run" ? "模拟发布" : "真实发布";
   renderReadiness();
 }
 
 function renderReadiness() {
   const health = state.health || {};
-  const rows = [["控制面", health.status === "ok"], ["本地模型", Boolean(health.llm_primary_model)], ["自动调度", Boolean(health.scheduler_running)], ["媒体生成", Boolean(health.media_generation_enabled)], ["发布门禁", health.publish_mode === "dry-run"]];
-  $("#readiness-list").innerHTML = rows.map(([label, ready]) => `<div><i class="${ready ? "ready" : ""}"></i><span>${label}</span><b>${ready ? "READY" : "CHECK"}</b></div>`).join("");
+  const components = health.components || {};
+  const rows = [["控制与调度", Boolean(health.scheduler_running)], ["内容模型", Boolean(components.content_model_ready)], ["画面生成引擎", Boolean(components.generation_engine_ready)], ["配音引擎", Boolean(components.voice_engine_ready)], ["唇形同步（可选）", Boolean(components.lip_sync_engine_ready)], ["动态增强", Boolean(components.motion_engine_ready)], ["成片合成器", Boolean(components.video_compositor_ready)], ["发布安全门禁", health.publish_mode === "dry-run"]];
+  $("#readiness-list").innerHTML = rows.map(([label, ready]) => `<div><i class="${ready ? "ready" : ""}"></i><span>${label}</span><b>${ready ? "READY" : "OFFLINE"}</b></div>`).join("");
+}
+
+function renderRuntimeBanner() {
+  const health = state.health || {}; const components = health.components || {}; const banner = $("#runtime-banner");
+  if (!health.media_generation_enabled || health.generation_ready) { banner.hidden = true; return; }
+  const missing = [["内容模型", components.content_model_ready], ["画面生成", components.generation_engine_ready], ["配音", components.voice_engine_ready], ["动态增强", components.motion_engine_ready], ["成片合成", components.video_compositor_ready]].filter(([, ready]) => !ready).map(([label]) => label);
+  $("#runtime-copy").textContent = `完整生产线未就绪${missing.length ? ` · 待启动：${missing.join("、")}` : ""}；运行中的任务会安全等待。`;
+  banner.hidden = false;
 }
 
 function automationForTask(task) { return state.automations.find((item) => item.id === task?.automation_id); }
@@ -219,8 +239,8 @@ function detailTaskStageIndex(task) {
   if (!["automation_failed", "failed", "cancelled"].includes(task.status)) return taskStageIndex(task.status);
   const eventStage = [...(task.events || [])].reverse().find((event) => timelineStages.includes(event.stage))?.stage;
   if (eventStage) return timelineStages.indexOf(eventStage);
-  if (task.audit) return 4;
-  if (task.media_path || task.generation_job_id) return 3;
+  if (task.audit) return 5;
+  if (task.media_path || task.generation_job_id) return 4;
   if (task.audio_path) return 2;
   if (task.content_plan) return 1;
   return 0;
@@ -237,10 +257,14 @@ function currentOperation(task) {
   if (task.metadata?.waiting_for_runtime?.detail) return task.metadata.waiting_for_runtime.detail;
   const shots = task.content_plan?.shots || [];
   const complete = shots.filter((shot) => shot.status === "complete").length;
+  const lipStageNames = { queued: "等待本机推理资源", preparing: "准备音视频", inference: "MuseTalk 正在推理", quality_check: "检查口型与正脸质量", complete: "口型同步完成", failed: "口型同步失败" };
+  const lipStage = lipStageNames[task.metadata?.lip_sync_stage] || "准备口型同步";
+  const lipElapsed = Math.max(0, Number(task.metadata?.lip_sync_elapsed_seconds || 0));
   const messages = {
     draft: "正在调用内容模型生成标题、脚本和分镜方案。",
     planned: "内容方案已经就绪，正在检查配音与本地媒体运行时。",
     assets_generating: `正在生成分镜素材，当前已完成 ${complete}/${shots.length || 0} 个。`,
+    lip_syncing: `${lipStage}${lipElapsed ? `，已运行 ${formatElapsedSeconds(lipElapsed)}` : ""}。MuseTalk 不提供逐帧进度，完成后将自动进入质量门禁。`,
     composing: "全部分镜已就绪，正在创建成片合成任务。",
     generated: task.media_path ? "成片已经生成，正在执行规则与模型审核。" : `本地视频引擎正在合成，实时进度 ${Math.round(Number(task.metadata?.video_progress || 0))}%。`,
     approved: "审核已经通过，准备进入平台发布门禁。",
@@ -300,7 +324,7 @@ function renderEventLog(task) {
 function renderShotList(task) {
   const shots = task.content_plan?.shots || [];
   if (!shots.length) return '<div class="detail-empty">分镜方案尚未生成。</div>';
-  return `<div class="shot-list">${shots.map((shot) => `<article class="shot-card"><div class="shot-index"><span>SHOT</span><b>${String(shot.order).padStart(2, "0")}</b></div><div class="shot-body"><div class="shot-head">${badge(shot.status)}<span>${shot.duration_seconds} 秒 · ${shot.kind === "image" ? "图片" : "视频"}</span><span>${escapeHtml(shot.provider || "等待分配引擎")}</span></div><h4>${escapeHtml(shot.narration)}</h4><p>${escapeHtml(shot.visual_prompt)}</p>${shot.negative_prompt ? `<details><summary>负面提示词</summary><p>${escapeHtml(shot.negative_prompt)}</p></details>` : ""}${shot.error ? `<div class="inline-error">${escapeHtml(shot.error)}</div>` : ""}${shot.media_path ? `<details class="shot-preview"><summary>预览分镜素材</summary>${shot.kind === "image" ? `<img src="/tasks/${encodeURIComponent(task.id)}/shots/${encodeURIComponent(shot.id)}/preview" alt="分镜 ${shot.order}" loading="lazy" />` : `<video controls preload="none" playsinline src="/tasks/${encodeURIComponent(task.id)}/shots/${encodeURIComponent(shot.id)}/preview"></video>`}</details><div class="shot-path"><code>${escapeHtml(shot.media_path)}</code><button type="button" data-copy-value="${escapeHtml(shot.media_path)}">复制</button></div>` : ""}</div></article>`).join("")}</div>`;
+  return `<div class="shot-list">${shots.map((shot) => { const requested = shot.presentation_mode || "narration"; const effective = shot.effective_presentation_mode || requested; const fallback = shot.lip_sync_fallback_reason; const quality = shot.lip_sync_score != null ? `同步 ${Math.round(shot.lip_sync_score * 100)} · 正脸 ${Math.round((shot.face_coverage || 0) * 100)}` : ""; return `<article class="shot-card ${requested === "talking_head" ? "is-talking" : ""}"><div class="shot-index"><span>SHOT</span><b>${String(shot.order).padStart(2, "0")}</b></div><div class="shot-body"><div class="shot-head">${badge(shot.status)}<span>${shot.duration_seconds} 秒 · ${shot.kind === "image" ? "图片" : "视频"}</span><span>${escapeHtml(mediaProviderName(shot.provider))}</span></div><div class="shot-mode-row"><b>${escapeHtml(presentationNames[requested] || requested)}</b><span>${effective !== requested ? `实际：${escapeHtml(presentationNames[effective] || effective)}` : quality || "按计划执行"}</span></div><h4>${escapeHtml(shot.narration)}</h4><p>${escapeHtml(shot.visual_prompt)}</p>${fallback ? `<div class="lip-fallback"><b>已安全降级</b><span>${escapeHtml(fallback)}</span></div>` : ""}${shot.audio_path ? `<div class="shot-audio">独立驱动音频 · <code>${escapeHtml(shot.audio_path)}</code></div>` : ""}${shot.negative_prompt ? `<details><summary>负面提示词</summary><p>${escapeHtml(shot.negative_prompt)}</p></details>` : ""}${shot.error || shot.lip_sync_error ? `<div class="inline-error">${escapeHtml(shot.error || shot.lip_sync_error)}</div>` : ""}${shot.media_path ? `<details class="shot-preview"><summary>预览分镜素材</summary>${shot.kind === "image" ? `<img src="/tasks/${encodeURIComponent(task.id)}/shots/${encodeURIComponent(shot.id)}/preview" alt="分镜 ${shot.order}" loading="lazy" />` : `<video controls preload="none" playsinline src="/tasks/${encodeURIComponent(task.id)}/shots/${encodeURIComponent(shot.id)}/preview"></video>`}</details><div class="shot-path"><code>${escapeHtml(shot.media_path)}</code><button type="button" data-copy-value="${escapeHtml(shot.media_path)}">复制</button></div>` : ""}</div></article>`; }).join("")}</div>`;
 }
 
 function renderAudit(task) {
@@ -338,11 +362,11 @@ function applyTemplate(key) {
   const template = templates[key]; if (!template) return; const form = $("#create-form"); form.elements.name.value = template.name; form.elements.topic.value = template.topic; form.elements.interval_minutes.value = template.interval; form.querySelectorAll('[name="platforms"]').forEach((input) => { input.checked = template.platforms.includes(input.value); });
 }
 
-function renderPlanReview() { const form = new FormData($("#create-form")); const platforms = form.getAll("platforms").map((item) => platformNames[item] || item); $("#plan-review").innerHTML = `<span>确认计划</span><h3>${escapeHtml(form.get("name") || "未命名计划")}</h3><p>${escapeHtml(form.get("topic") || "尚未填写内容主题")}</p><div>${platforms.map((item) => `<b>${escapeHtml(item)}</b>`).join("")}<b>每 ${escapeHtml(form.get("interval_minutes"))} 分钟</b><b>${form.get("enabled") === "on" ? "定时开启" : "仅手动运行"}</b></div>`; }
+function renderPlanReview() { const form = new FormData($("#create-form")); const platforms = form.getAll("platforms").map((item) => platformNames[item] || item); $("#plan-review").innerHTML = `<span>确认计划</span><h3>${escapeHtml(form.get("name") || "未命名计划")}</h3><p>${escapeHtml(form.get("topic") || "尚未填写内容主题")}</p><div>${platforms.map((item) => `<b>${escapeHtml(item)}</b>`).join("")}<b>${escapeHtml(presentationNames[form.get("presentation_mode")] || "旁白镜头")}</b><b>每 ${escapeHtml(form.get("interval_minutes"))} 分钟</b><b>${form.get("enabled") === "on" ? "定时开启" : "仅手动运行"}</b></div>`; }
 
 function openPlanForm({ automation = null, template = "" } = {}) {
   const form = $("#create-form"); form.reset(); state.editingAutomationId = automation?.id || ""; $("#create-error").textContent = ""; $("#form-kicker").textContent = automation ? "EDIT AUTOMATION" : "NEW AUTOMATION"; $("#form-title").textContent = automation ? "编辑内容计划" : "创建内容计划"; $("#save-only-button").textContent = automation ? "保存修改" : "仅保存";
-  if (automation) { form.elements.name.value = automation.name; form.elements.topic.value = automation.topic; form.elements.interval_minutes.value = String(automation.interval_minutes); form.elements.materials.value = automation.video_materials.join("\n"); form.elements.enabled.checked = automation.enabled; form.querySelectorAll('[name="platforms"]').forEach((input) => { input.checked = automation.platforms.includes(input.value); }); }
+  if (automation) { form.elements.name.value = automation.name; form.elements.topic.value = automation.topic; form.elements.interval_minutes.value = String(automation.interval_minutes); form.elements.materials.value = automation.video_materials.join("\n"); form.elements.presentation_mode.value = automation.presentation_mode || "narration"; form.elements.enabled.checked = automation.enabled; form.querySelectorAll('[name="platforms"]').forEach((input) => { input.checked = automation.platforms.includes(input.value); }); }
   if (template) applyTemplate(template); setWizardStep(1); $("#create-modal").showModal(); setTimeout(() => form.elements.name.focus(), 60);
 }
 
@@ -357,7 +381,7 @@ async function handleAutomationAction(button) {
   const { action, id, enabled } = button.dataset; const automation = state.automations.find((item) => item.id === id);
   if (action === "delete") { state.pendingAutomationDeleteId = id; $("#delete-plan-name").textContent = button.dataset.name || "该计划"; $("#delete-modal").showModal(); return; }
   if (action === "edit") { openPlanForm({ automation }); return; }
-  if (action === "duplicate") { try { await api("/automations", { method: "POST", body: JSON.stringify({ name: `${automation.name}（副本）`, topic: automation.topic, platforms: automation.platforms, video_materials: automation.video_materials, interval_minutes: automation.interval_minutes, enabled: false }) }); await loadData({ quiet: true }); showToast("计划已复制，默认保持暂停"); } catch (error) { showToast(error.message); } return; }
+  if (action === "duplicate") { try { await api("/automations", { method: "POST", body: JSON.stringify({ name: `${automation.name}（副本）`, topic: automation.topic, platforms: automation.platforms, video_materials: automation.video_materials, presentation_mode: automation.presentation_mode || "narration", interval_minutes: automation.interval_minutes, enabled: false }) }); await loadData({ quiet: true }); showToast("计划已复制，默认保持暂停"); } catch (error) { showToast(error.message); } return; }
   if (action === "history") { state.ledgerAutomationId = id; state.activeTab = "runs"; $("#ledger-search").value = ""; $("#ledger-status-filter").value = "all"; activateTab("runs"); renderLedger(); $("#ledger").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
   if (["run", "retry"].includes(action)) { await startAutomation(id, button); return; }
   const originalText = button.textContent; button.disabled = true; button.textContent = "更新中…";
@@ -375,7 +399,7 @@ $("#connect-form").addEventListener("submit", async (event) => { event.preventDe
 
 $("#create-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (!validateWizardStep(3)) return; const formElement = event.currentTarget; const submitButton = event.submitter; const form = new FormData(formElement); const platforms = form.getAll("platforms"); if (!platforms.length) { $("#create-error").textContent = "至少选择一个平台"; return; }
-  const materials = String(form.get("materials") || "").split(/\n+/).map((value) => value.trim()).filter(Boolean); const body = { name: form.get("name"), topic: form.get("topic"), platforms, video_materials: materials, interval_minutes: Number(form.get("interval_minutes")), enabled: form.get("enabled") === "on" };
+  const materials = String(form.get("materials") || "").split(/\n+/).map((value) => value.trim()).filter(Boolean); const body = { name: form.get("name"), topic: form.get("topic"), platforms, video_materials: materials, presentation_mode: form.get("presentation_mode") || "narration", interval_minutes: Number(form.get("interval_minutes")), enabled: form.get("enabled") === "on" };
   submitButton.disabled = true; $("#create-error").textContent = "";
   try { const automation = state.editingAutomationId ? await api(`/automations/${state.editingAutomationId}`, { method: "PUT", body: JSON.stringify(body) }) : await api("/automations", { method: "POST", body: JSON.stringify(body) }); const shouldRun = submitButton.dataset.submitMode === "run" && !state.editingAutomationId; formElement.reset(); $("#create-modal").close(); state.editingAutomationId = ""; await loadData({ quiet: true }); showToast(shouldRun ? "计划已保存，正在启动首次运行" : "计划已保存"); if (shouldRun) await startAutomation(automation.id); }
   catch (error) { $("#create-error").textContent = error.message; } finally { submitButton.disabled = false; }
@@ -386,7 +410,7 @@ document.addEventListener("click", async (event) => {
   const task = event.target.closest("[data-task-id]"); if (task) openTaskDetail(task.dataset.taskId);
   const retry = event.target.closest("[data-retry-automation]"); if (retry) { const taskId = state.selectedTaskId; retry.disabled = true; try { await api(`/tasks/${taskId}/retry`, { method: "POST" }); $("#detail-modal").close(); await loadData({ quiet: true }); showToast("已从失败阶段恢复，编排器将自动续跑"); } catch (error) { showToast(error.message); } finally { retry.disabled = false; } }
   const cancel = event.target.closest("[data-cancel-task]"); if (cancel) requestTaskCancel(cancel.dataset.cancelTask);
-  const copy = event.target.closest("[data-copy-value]"); if (copy) navigator.clipboard.writeText(copy.dataset.copyValue).then(() => showToast("路径已复制")).catch(() => showToast("复制失败，请手动选择路径"));
+  const copy = event.target.closest("[data-copy-value]"); if (copy) navigator.clipboard.writeText(copy.dataset.copyValue).then(() => showToast("已复制")).catch(() => showToast("复制失败，请手动选择"));
   const tab = event.target.closest("[data-tab]"); if (tab) activateTab(tab.dataset.tab);
   const template = event.target.closest("[data-template]"); if (template && !$("#create-modal").open) openPlanForm({ template: template.dataset.template }); else if (template) applyTemplate(template.dataset.template);
   if (event.target.closest("[data-open-blank]")) openPlanForm();
@@ -400,6 +424,7 @@ $("#wizard-next").addEventListener("click", () => { if (validateWizardStep(state
 $$('[data-wizard-to]').forEach((button) => button.addEventListener("click", () => { const target = Number(button.dataset.wizardTo); if (target < state.wizardStep || validateWizardStep(state.wizardStep)) setWizardStep(target); }));
 $("#open-create-button").addEventListener("click", () => openPlanForm()); $("#hero-create-button").addEventListener("click", () => openPlanForm());
 $("#connect-settings-button").addEventListener("click", () => showConnect()); $("#confirm-delete-button").addEventListener("click", confirmAutomationDelete); $("#confirm-cancel-button").addEventListener("click", confirmTaskCancel);
+$("#open-runtime-button").addEventListener("click", () => showConnect());
 $("#cancel-active-button").addEventListener("click", () => requestTaskCancel($("#run-dock").dataset.taskId)); $("#run-dock-detail").addEventListener("click", () => openTaskDetail($("#run-dock").dataset.taskId));
 $("#refresh-button").addEventListener("click", () => loadData()); $("#view-attention-button").addEventListener("click", () => { $("#ledger-status-filter").value = "failed"; activateTab("tasks"); renderLedger(); $("#ledger").scrollIntoView({ behavior: "smooth" }); });
 $("#plan-search").addEventListener("input", renderAutomations); $("#ledger-search").addEventListener("input", renderLedger); $("#ledger-status-filter").addEventListener("change", renderLedger); $("#clear-ledger-filter").addEventListener("click", () => { $("#ledger-search").value = ""; $("#ledger-status-filter").value = "all"; state.ledgerAutomationId = ""; renderLedger(); });

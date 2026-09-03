@@ -1,0 +1,89 @@
+--- a/server.py
++++ b/server.py
+@@ -108,7 +108,12 @@ async def lifespan(_app: FastAPI):
+     whisper = whisper.to(device=device, dtype=weight_dtype).eval()
+     whisper.requires_grad_(False)
+ 
+-    fp = FaceParsing(left_cheek_width=90, right_cheek_width=90)
++    left_cheek_width = int(os.environ.get("MUSETALK_LEFT_CHEEK_WIDTH", "60"))
++    right_cheek_width = int(os.environ.get("MUSETALK_RIGHT_CHEEK_WIDTH", "60"))
++    fp = FaceParsing(
++        left_cheek_width=left_cheek_width,
++        right_cheek_width=right_cheek_width,
++    )
+     timesteps = torch.tensor([0], device=device)
+ 
+     state.update(
+@@ -121,8 +126,17 @@ async def lifespan(_app: FastAPI):
+         weight_dtype=weight_dtype,
+         fp=fp,
+         timesteps=timesteps,
++        mask_mode=os.environ.get("MUSETALK_PARSING_MODE", "jaw"),
++        upper_boundary_ratio=float(
++            os.environ.get("MUSETALK_UPPER_BOUNDARY_RATIO", "0.55")
++        ),
++    )
++    print(
++        "[musetalk] ready "
++        f"mask={state['mask_mode']} cheeks={left_cheek_width}/{right_cheek_width} "
++        f"upper={state['upper_boundary_ratio']}",
++        flush=True,
+     )
+-    print("[musetalk] ready", flush=True)
+     yield
+ 
+ 
+@@ -195,7 +209,7 @@
+ 
+ # ─── helpers ──────────────────────────────────────────────────
+ 
+-EXTRA_MARGIN = 10  # v15 default
++EXTRA_MARGIN = int(os.environ.get("MUSETALK_EXTRA_MARGIN", "6"))
+ 
+ 
+ def _detect_media_kind(data: bytes) -> str:
+@@ -260,7 +274,11 @@ def prepare_avatar(video_bytes: bytes) -> dict:
+             # The mask depends only on the source frame, not on the generated
+             # mouth — so we do this once during warmup, saving ~7s per lipsync.
+             mask_array, crop_box = get_image_prepare_material(
+-                frame, [x1, y1, x2, y2], fp=fp, mode="jaw"
++                frame,
++                [x1, y1, x2, y2],
++                fp=fp,
++                mode=state["mask_mode"],
++                upper_boundary_ratio=state["upper_boundary_ratio"],
+             )
+             mask_list.append(mask_array)
+             crop_box_list.append(crop_box)
+@@ -280,8 +298,10 @@ def prepare_avatar(video_bytes: bytes) -> dict:
+         shutil.rmtree(tmp, ignore_errors=True)
+ 
+ 
+-def run_lipsync(avatar: dict, audio_bytes: bytes, batch_size: int = 16) -> bytes:
++def run_lipsync(avatar: dict, audio_bytes: bytes, batch_size: int | None = None) -> bytes:
+     """Given a prepared avatar and audio bytes, return final mp4 bytes."""
++    if batch_size is None:
++        batch_size = int(os.environ.get("MUSETALK_BATCH_SIZE", "4"))
+     prof = {}
+     _t0 = time.time()
+ 
+@@ -419,7 +439,18 @@ class StreamReq(BaseModel):
+ 
+ @app.get("/health")
+ def health():
+-    return {"ok": True, "device": str(state.get("device")), "avatars": list(avatar_cache)}
++    return {
++        "ok": True,
++        "device": str(state.get("device")),
++        "avatars": list(avatar_cache),
++        "blend": {
++            "extra_margin": EXTRA_MARGIN,
++            "mode": state.get("mask_mode"),
++            "left_cheek_width": int(os.environ.get("MUSETALK_LEFT_CHEEK_WIDTH", "60")),
++            "right_cheek_width": int(os.environ.get("MUSETALK_RIGHT_CHEEK_WIDTH", "60")),
++            "upper_boundary_ratio": state.get("upper_boundary_ratio"),
++        },
++    }
+ 
+ 
+ @app.post("/warmup")

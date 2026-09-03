@@ -8,7 +8,8 @@ OpenMediaFlow reads ComfyUI API-format workflow JSON files from this directory:
 The committed workflows target the project-owned local models:
 
 - `image.json`: SDXL Turbo, one-step cover generation
-- `video.json`: LTX-Video 2B 0.9.8 distilled + FP8 T5, 16 FPS vertical shots
+- `video.json`: LTX-Video 2B 0.9.8 distilled + FP8 T5, 24 FPS text-to-video fallback
+- `video_i2v.json`: same local LTX model, 24 FPS image-to-video shots driven by the generated character reference
 
 The provider defaults to 512x896 native generation (exact 9:16 and divisible by 32).
 The compositor is responsible for producing the final platform-resolution video.

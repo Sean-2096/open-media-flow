@@ -26,6 +26,7 @@ class GenerationRequest:
     width: int = 512
     height: int = 896
     seed: int = -1
+    reference_image_path: str | None = None
 
 
 @dataclass(frozen=True)

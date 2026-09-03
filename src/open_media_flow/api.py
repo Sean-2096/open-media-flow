@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import mimetypes
+import time
+import urllib.error
+import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .audit import ContentAuditor
 from .llm import FallbackLLMRouter, LLMError, OpenAICompatibleClient
+from .lip_sync import LocalLipSyncClient
 from .media import UnsafeMediaPathError, resolve_media_path
 from .media_providers import ComfyUIProvider
 from .models import (
@@ -86,10 +91,16 @@ media_provider = ComfyUIProvider(
     settings.comfyui_output_dir,
     settings.comfyui_image_workflow,
     settings.comfyui_video_workflow,
+    video_i2v_workflow=settings.comfyui_video_i2v_workflow,
 )
 tts = LocalTTSClient(
     settings.local_media_runtime_base_url,
     settings.local_media_runtime_api_key,
+    settings.data_dir / "inbox",
+)
+lip_sync = LocalLipSyncClient(
+    settings.lip_sync_base_url,
+    settings.lip_sync_api_key,
     settings.data_dir / "inbox",
 )
 automation_engine = None
@@ -103,12 +114,19 @@ if settings.scheduler_enabled:
         pipeline,
         media_provider,
         tts,
+        lip_sync,
         database_url=settings.database_url,
         redis_url=settings.redis_url,
         timezone=settings.scheduler_timezone,
         tick_seconds=settings.scheduler_tick_seconds,
         max_attempts=settings.automation_max_attempts,
         media_generation_enabled=settings.media_generation_enabled,
+        lip_sync_enabled=settings.lip_sync_enabled,
+        lip_sync_fallback_to_narration=settings.lip_sync_fallback_to_narration,
+        lip_sync_min_score=settings.lip_sync_min_score,
+        lip_sync_min_face_coverage=settings.lip_sync_min_face_coverage,
+        frame_interpolation_enabled=settings.frame_interpolation_enabled,
+        frame_interpolation_multiplier=settings.frame_interpolation_multiplier,
     )
 
 
@@ -123,10 +141,76 @@ async def lifespan(_app: FastAPI):
             automation_engine.stop()
 
 
-app = FastAPI(title="OpenMediaFlow", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="OpenMediaFlow", version="0.7.0", lifespan=lifespan)
 web_root = Path(__file__).resolve().parent / "web"
 app.mount("/assets", StaticFiles(directory=web_root), name="dashboard-assets")
 dashboard_cookie_name = "omf_dashboard_session"
+_runtime_health_cache: tuple[float, dict[str, bool]] | None = None
+_runtime_last_success: dict[str, float] = {}
+
+
+def _probe_json(url: str, *, headers: dict[str, str] | None = None) -> dict:
+    request = urllib.request.Request(url, headers=headers or {})
+    try:
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            if response.status != 200:
+                return {}
+            return json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return {}
+
+
+def _probe_http(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=1.5) as response:
+            return response.status == 200
+    except (OSError, urllib.error.URLError):
+        return False
+
+
+def runtime_health() -> dict[str, bool]:
+    """Return real runtime readiness without making every UI poll fan out."""
+    global _runtime_health_cache
+    now = time.monotonic()
+    if _runtime_health_cache and now - _runtime_health_cache[0] < 5:
+        return _runtime_health_cache[1]
+
+    model_online = bool(_probe_json(f"{settings.llm_primary.base_url}/models"))
+    generation_online = bool(
+        _probe_json(f"{settings.comfyui_base_url}/system_stats")
+    )
+    native_health = _probe_json(
+        f"{settings.local_media_runtime_base_url}/health",
+        headers={"X-API-Key": settings.local_media_runtime_api_key},
+    )
+    compositor_online = _probe_http(f"{settings.mpt_base_url}/ping")
+    observed = {
+        "content_model_ready": model_online,
+        "generation_engine_ready": generation_online
+        and settings.comfyui_image_workflow.is_file()
+        and settings.comfyui_video_workflow.is_file()
+        and settings.comfyui_video_i2v_workflow.is_file(),
+        "voice_engine_ready": native_health.get("tts_ready", True) is not False
+        and bool(native_health),
+        "motion_engine_ready": native_health.get(
+            "frame_interpolation_ready", False
+        )
+        is True,
+        "lip_sync_engine_ready": settings.lip_sync_enabled and lip_sync.available(),
+        "video_compositor_ready": compositor_online,
+    }
+    result = {}
+    for component, ready in observed.items():
+        if ready:
+            _runtime_last_success[component] = now
+        if component == "generation_engine_ready":
+            result[component] = ready
+        else:
+            result[component] = (
+                ready or now - _runtime_last_success.get(component, 0) < 180
+            )
+    _runtime_health_cache = (now, result)
+    return result
 
 
 def dashboard_session_token() -> str:
@@ -224,9 +308,20 @@ def media_file_response(value: str | None, label: str) -> FileResponse:
 
 
 @app.get("/health")
-def health() -> dict[str, str | bool | int]:
+def health() -> dict:
+    components = runtime_health()
+    generation_ready = (
+        settings.media_generation_enabled
+        and components["generation_engine_ready"]
+        and components["voice_engine_ready"]
+        and (
+            not settings.frame_interpolation_enabled
+            or components["motion_engine_ready"]
+        )
+    )
+    control_ready = bool(automation_engine and automation_engine.running)
     return {
-        "status": "ok",
+        "status": "ok" if control_ready and generation_ready else "degraded",
         "publish_mode": settings.publish_mode,
         "llm_primary_model": settings.llm_primary.model,
         "llm_fallback_enabled": settings.llm_fallback_enabled,
@@ -237,6 +332,10 @@ def health() -> dict[str, str | bool | int]:
         "store_backend": settings.store_backend,
         "media_generation_enabled": settings.media_generation_enabled,
         "media_video_provider": settings.media_video_provider,
+        "lip_sync_enabled": settings.lip_sync_enabled,
+        "lip_sync_fallback_to_narration": settings.lip_sync_fallback_to_narration,
+        "generation_ready": generation_ready,
+        "components": components,
     }
 
 
@@ -247,10 +346,14 @@ def media_runtime() -> dict[str, str | bool]:
         "base_url": settings.comfyui_base_url,
         "image_workflow_configured": settings.comfyui_image_workflow.is_file(),
         "video_workflow_configured": settings.comfyui_video_workflow.is_file(),
+        "video_i2v_workflow_configured": settings.comfyui_video_i2v_workflow.is_file(),
         "image_available": media_provider.available(AssetKind.IMAGE),
         "video_available": media_provider.available(AssetKind.VIDEO),
         "speech_runtime": settings.local_media_runtime_base_url,
         "speech_available": tts.available(),
+        "lip_sync_enabled": settings.lip_sync_enabled,
+        "lip_sync_runtime": settings.lip_sync_base_url,
+        "lip_sync_available": lip_sync.available(),
     }
 
 

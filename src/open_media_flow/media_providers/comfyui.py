@@ -27,6 +27,7 @@ class ComfyUIProvider:
         image_workflow: Path,
         video_workflow: Path,
         *,
+        video_i2v_workflow: Path | None = None,
         timeout_seconds: int = 30,
     ):
         self.base_url = base_url.rstrip("/")
@@ -35,10 +36,17 @@ class ComfyUIProvider:
             AssetKind.IMAGE: image_workflow,
             AssetKind.VIDEO: video_workflow,
         }
+        self.video_i2v_workflow = video_i2v_workflow
         self.timeout_seconds = timeout_seconds
 
     def available(self, kind: AssetKind) -> bool:
         if not self.workflows[kind].is_file():
+            return False
+        if (
+            kind == AssetKind.VIDEO
+            and self.video_i2v_workflow is not None
+            and not self.video_i2v_workflow.is_file()
+        ):
             return False
         try:
             with urllib.request.urlopen(f"{self.base_url}/system_stats", timeout=3) as response:
@@ -48,6 +56,21 @@ class ComfyUIProvider:
 
     def submit(self, request: GenerationRequest) -> MediaJob:
         workflow_path = self.workflows[request.kind]
+        reference_image = None
+        if request.kind == AssetKind.VIDEO and request.reference_image_path:
+            if self.video_i2v_workflow is None:
+                raise MediaGenerationError("image-to-video workflow is not configured")
+            workflow_path = self.video_i2v_workflow
+            reference_path = Path(request.reference_image_path).expanduser().resolve()
+            try:
+                relative_reference = reference_path.relative_to(self.output_root)
+            except ValueError as exc:
+                raise MediaGenerationError(
+                    "reference image must be inside the ComfyUI output directory"
+                ) from exc
+            if not reference_path.is_file():
+                raise MediaGenerationError(f"reference image does not exist: {reference_path}")
+            reference_image = f"{relative_reference.as_posix()} [output]"
         if not workflow_path.is_file():
             raise MediaGenerationError(
                 f"{request.kind.value} workflow is not configured: {workflow_path}"
@@ -59,9 +82,10 @@ class ComfyUIProvider:
             "{{WIDTH}}": request.width,
             "{{HEIGHT}}": request.height,
             "{{DURATION_SECONDS}}": request.duration_seconds,
-            "{{FRAME_COUNT}}": max(17, request.duration_seconds * 16 + 1),
+            "{{FRAME_COUNT}}": max(25, request.duration_seconds * 24 + 1),
             "{{SEED}}": request.seed if request.seed >= 0 else random.randrange(2**31),
             "{{FILENAME_PREFIX}}": f"{request.task_id}/{request.shot_id}",
+            "{{REFERENCE_IMAGE}}": reference_image or "",
         }
         workflow = self._replace(template, replacements)
         payload = json.dumps({"prompt": workflow}, ensure_ascii=False).encode("utf-8")

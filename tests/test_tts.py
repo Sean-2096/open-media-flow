@@ -50,3 +50,36 @@ def test_local_tts_rejects_unsafe_runtime_path(tmp_path, monkeypatch):
 
     with pytest.raises(TTSError, match="unsafe path"):
         client.synthesize("task-1", "这是一段本地配音")
+
+
+def test_local_runtime_resolves_interpolated_video(tmp_path, monkeypatch):
+    media_root = tmp_path / "inbox"
+    video = media_root / "generated/interpolated/task-1/shot-1-2x.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"video")
+    StubResponse.payload = {
+        "relative_path": "generated/interpolated/task-1/shot-1-2x.mp4",
+        "provider": "rife-mlx",
+    }
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data)
+        captured["timeout"] = timeout
+        return StubResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = LocalTTSClient("http://127.0.0.1:8090", "", media_root)
+
+    output, provider = client.interpolate(
+        "task-1",
+        "shot-1",
+        str(media_root / "generated/comfyui/source.mp4"),
+        multiplier=2,
+    )
+
+    assert output == video
+    assert provider == "rife-mlx"
+    assert captured["body"]["multiplier"] == 2
+    assert captured["body"]["source_path"] == "generated/comfyui/source.mp4"
+    assert captured["timeout"] == 1260

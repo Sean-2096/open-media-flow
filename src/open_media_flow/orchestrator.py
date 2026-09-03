@@ -8,6 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from redis import Redis
 
 from .llm import FallbackLLMRouter
+from .lip_sync import LocalLipSyncClient, LipSyncRuntimeUnavailableError
 from .media_providers import (
     ComfyUIProvider,
     GenerationRequest,
@@ -20,6 +21,8 @@ from .models import (
     AutomationCreate,
     AutomationRun,
     ContentTask,
+    LipSyncStatus,
+    ShotPresentationMode,
     TaskEvent,
     TaskStatus,
 )
@@ -58,6 +61,7 @@ class AutomationEngine:
         pipeline: Pipeline,
         media_provider: ComfyUIProvider,
         tts: LocalTTSClient,
+        lip_sync: LocalLipSyncClient,
         *,
         database_url: str,
         redis_url: str,
@@ -65,6 +69,12 @@ class AutomationEngine:
         tick_seconds: int,
         max_attempts: int,
         media_generation_enabled: bool,
+        lip_sync_enabled: bool,
+        lip_sync_fallback_to_narration: bool,
+        lip_sync_min_score: float,
+        lip_sync_min_face_coverage: float,
+        frame_interpolation_enabled: bool,
+        frame_interpolation_multiplier: int,
     ):
         self.store = store
         self.llm_router = llm_router
@@ -72,9 +82,16 @@ class AutomationEngine:
         self.pipeline = pipeline
         self.media_provider = media_provider
         self.tts = tts
+        self.lip_sync = lip_sync
         self.tick_seconds = tick_seconds
         self.max_attempts = max_attempts
         self.media_generation_enabled = media_generation_enabled
+        self.lip_sync_enabled = lip_sync_enabled
+        self.lip_sync_fallback_to_narration = lip_sync_fallback_to_narration
+        self.lip_sync_min_score = lip_sync_min_score
+        self.lip_sync_min_face_coverage = lip_sync_min_face_coverage
+        self.frame_interpolation_enabled = frame_interpolation_enabled
+        self.frame_interpolation_multiplier = frame_interpolation_multiplier
         self.redis = Redis.from_url(redis_url, decode_responses=True)
         self.scheduler = BackgroundScheduler(
             jobstores={"default": SQLAlchemyJobStore(url=database_url)},
@@ -172,6 +189,7 @@ class AutomationEngine:
             topic=automation.topic,
             platforms=automation.platforms,
             video_materials=automation.video_materials,
+            presentation_mode=automation.presentation_mode,
             automation_id=automation.id,
         )
         self._record_event(task, "策划", TaskStatus.DRAFT, "任务已创建，等待本地编排器生成内容方案")
@@ -241,10 +259,18 @@ class AutomationEngine:
                 if task.content_plan is None:
                     raise ValueError("content plan is missing")
                 if not self.media_provider.available(AssetKind.VIDEO):
-                    self._wait_for_runtime(task, "video", "等待本地视频生成运行时恢复")
+                    self._wait_for_runtime(
+                        task,
+                        "video",
+                        "生成引擎未运行；执行 ./scripts/omf start 后，任务会自动继续",
+                    )
                     return
                 if not self.media_provider.available(AssetKind.IMAGE):
-                    self._wait_for_runtime(task, "image", "等待本地图像生成运行时恢复")
+                    self._wait_for_runtime(
+                        task,
+                        "image",
+                        "生成引擎未运行；执行 ./scripts/omf start 后，任务会自动继续",
+                    )
                     return
                 if not task.audio_path:
                     if not self.tts.available():
@@ -253,35 +279,49 @@ class AutomationEngine:
                     task.audio_path = str(self.tts.synthesize(task.id, task.script))
                     self._record_event(task, "配音", task.status, "本地配音已生成")
                     self.store.save(task)
-                for shot in task.content_plan.shots:
-                    if shot.status != AssetStatus.PENDING:
-                        continue
-                    shot.error = None
-                    job = self.media_provider.submit(
-                        GenerationRequest(
-                            task_id=task.id,
-                            shot_id=shot.id,
-                            kind=AssetKind.VIDEO,
-                            prompt=shot.visual_prompt,
-                            negative_prompt=shot.negative_prompt,
-                            duration_seconds=shot.duration_seconds,
-                        )
+                if (
+                    not task.metadata.get("character_reference_path")
+                    and not task.metadata.get("character_generation_job_id")
+                ):
+                    reference_prompt = (
+                        task.content_plan.character_reference_prompt
+                        or task.content_plan.cover_prompt
                     )
-                    shot.provider = job.provider
-                    shot.generation_job_id = job.id
-                    shot.status = AssetStatus.QUEUED
-                    self.store.save(task)
-                if not task.metadata.get("cover_generation_job_id"):
-                    cover_job = self.media_provider.submit(
+                    has_talking_head = any(
+                        shot.presentation_mode == ShotPresentationMode.TALKING_HEAD
+                        for shot in task.content_plan.shots
+                    )
+                    if has_talking_head:
+                        reference_prompt = (
+                            f"{reference_prompt}, photorealistic adult human presenter, "
+                            "front-facing waist-up portrait composition, upper torso visible, hands "
+                            "outside the frame, subject occupies about half of the frame, generous headroom, "
+                            "direct eye contact, relaxed neutral expression, lips fully sealed "
+                            "and pressed together, absolutely no visible teeth, unobstructed mouth, "
+                            "symmetrical soft studio lighting, clean simple background"
+                        )
+                    character_job = self.media_provider.submit(
                         GenerationRequest(
                             task_id=task.id,
-                            shot_id="cover",
+                            shot_id="character-reference",
                             kind=AssetKind.IMAGE,
-                            prompt=task.content_plan.cover_prompt,
+                            prompt=reference_prompt,
+                            negative_prompt=(
+                                "(octane render, drawing, anime, bad photo, bad photography:1.3), "
+                                "(worst quality, low quality, blurry:1.2), bad teeth, deformed teeth, "
+                                "deformed lips, bad anatomy, bad proportions, deformed eyes, "
+                                "deformed face, bad hands, fused fingers, side profile, looking down, "
+                                "open mouth, visible teeth, talking, hand over face, microphone, "
+                                "camera equipment, text, logo, watermark"
+                                if has_talking_head
+                                else ""
+                            ),
+                            width=768 if has_talking_head else 512,
+                            height=1024 if has_talking_head else 896,
                         )
                     )
-                    task.metadata["cover_generation_job_id"] = cover_job.id
-                    task.metadata["cover_status"] = AssetStatus.QUEUED.value
+                    task.metadata["character_generation_job_id"] = character_job.id
+                    task.metadata["character_status"] = AssetStatus.QUEUED.value
                     self.store.save(task)
                 retrying_assets = (
                     task.metadata.get("automation_retry", {}).get("stage")
@@ -296,7 +336,7 @@ class AutomationEngine:
                     task,
                     "素材",
                     task.status,
-                    f"已提交 {len(task.content_plan.shots)} 个视频分镜和 1 张封面",
+                    "已提交角色母版；完成后将基于同一角色生成全部视频分镜",
                 )
                 self.store.save(task)
                 self._set_run_status(task, "running", "本地媒体素材生成中")
@@ -316,6 +356,75 @@ class AutomationEngine:
                     return
                 self._mark_runtime_recovered(task)
                 self._set_run_status(task, "running", "本地媒体素材生成中")
+                character_job_id = str(
+                    task.metadata.get("character_generation_job_id") or ""
+                )
+                character_reference_path = str(
+                    task.metadata.get("character_reference_path") or ""
+                )
+                if character_job_id and not character_reference_path:
+                    character = self.media_provider.poll(
+                        character_job_id, AssetKind.IMAGE
+                    )
+                    if character.error or character.state == "failed":
+                        task.metadata["character_status"] = AssetStatus.FAILED.value
+                        raise ValueError(
+                            character.error or "character reference generation failed"
+                        )
+                    if character.media_path is None:
+                        self.store.save(task)
+                        return
+                    character_reference_path = str(character.media_path)
+                    task.metadata["character_reference_path"] = character_reference_path
+                    task.metadata["character_status"] = AssetStatus.COMPLETE.value
+                    task.cover_path = character_reference_path
+                    task.metadata["cover_status"] = AssetStatus.COMPLETE.value
+                    for shot in task.content_plan.shots:
+                        if shot.presentation_mode == ShotPresentationMode.TALKING_HEAD:
+                            shot.lip_sync_source_path = character_reference_path
+                    self._record_event(
+                        task,
+                        "角色一致性",
+                        task.status,
+                        "角色母版已生成；讲话分镜将使用稳定闭口正脸作为口型底片",
+                    )
+                    self.store.save(task)
+
+                if character_reference_path:
+                    for shot in task.content_plan.shots:
+                        if shot.presentation_mode == ShotPresentationMode.TALKING_HEAD:
+                            shot.lip_sync_source_path = character_reference_path
+
+                submitted_shots = 0
+                for shot in task.content_plan.shots:
+                    if shot.status != AssetStatus.PENDING:
+                        continue
+                    shot.error = None
+                    job = self.media_provider.submit(
+                        GenerationRequest(
+                            task_id=task.id,
+                            shot_id=shot.id,
+                            kind=AssetKind.VIDEO,
+                            prompt=shot.visual_prompt,
+                            negative_prompt=shot.negative_prompt,
+                            duration_seconds=shot.duration_seconds,
+                            reference_image_path=character_reference_path or None,
+                        )
+                    )
+                    shot.provider = job.provider
+                    shot.generation_job_id = job.id
+                    shot.status = AssetStatus.QUEUED
+                    submitted_shots += 1
+                    self.store.save(task)
+                if submitted_shots:
+                    mode = "角色母版图生视频" if character_reference_path else "文生视频"
+                    self._record_event(
+                        task,
+                        "角色一致性",
+                        task.status,
+                        f"已按{mode}提交 {submitted_shots} 个分镜",
+                    )
+                    self.store.save(task)
                 for shot in task.content_plan.shots:
                     if shot.status != AssetStatus.QUEUED or not shot.generation_job_id:
                         continue
@@ -350,16 +459,111 @@ class AutomationEngine:
                 if not shots_complete or not cover_complete:
                     self.store.save(task)
                     return
-                task.video_materials = [
-                    shot.media_path
+                self._start_lip_sync_or_finish(task)
+
+            if task.status == TaskStatus.LIP_SYNCING:
+                if task.content_plan is None:
+                    raise ValueError("content plan is missing")
+                if not self.lip_sync.available():
+                    self._wait_for_runtime(
+                        task,
+                        "lip_sync",
+                        "正面讲话分镜已就绪，等待本地唇形同步运行时恢复",
+                    )
+                    return
+                self._mark_runtime_recovered(task)
+                for shot in task.content_plan.shots:
+                    if shot.lip_sync_status != LipSyncStatus.PENDING:
+                        continue
+                    if not shot.media_path or not shot.audio_path:
+                        raise ValueError(
+                            f"shot {shot.order} lip-sync inputs are incomplete"
+                        )
+                    job = self.lip_sync.submit(
+                        task.id,
+                        shot.id,
+                        shot.lip_sync_source_path or shot.media_path,
+                        shot.audio_path,
+                    )
+                    shot.lip_sync_job_id = job.id
+                    shot.lip_sync_provider = job.provider
+                    shot.lip_sync_status = LipSyncStatus.QUEUED
+                    self.store.save(task)
+                progresses: list[int] = []
+                lip_sync_stages: list[str] = []
+                lip_sync_elapsed: list[int] = []
+                for shot in task.content_plan.shots:
+                    if shot.lip_sync_status != LipSyncStatus.QUEUED:
+                        continue
+                    if not shot.lip_sync_job_id:
+                        raise ValueError(f"shot {shot.order} lip-sync job id is missing")
+                    result = self.lip_sync.poll(shot.lip_sync_job_id)
+                    progresses.append(result.progress)
+                    if result.stage:
+                        lip_sync_stages.append(result.stage)
+                    if result.elapsed_seconds is not None:
+                        lip_sync_elapsed.append(result.elapsed_seconds)
+                    if result.error or result.state == "failed":
+                        self._handle_lip_sync_failure(
+                            task,
+                            shot,
+                            result.error or "lip-sync generation failed",
+                        )
+                        continue
+                    if result.media_path is None:
+                        continue
+                    quality_error = self._lip_sync_quality_error(
+                        result.sync_score,
+                        result.face_coverage,
+                    )
+                    if quality_error:
+                        self._handle_lip_sync_failure(task, shot, quality_error)
+                        continue
+                    shot.media_path = str(result.media_path)
+                    shot.lip_sync_status = LipSyncStatus.COMPLETE
+                    shot.effective_presentation_mode = ShotPresentationMode.TALKING_HEAD
+                    shot.lip_sync_score = result.sync_score
+                    shot.face_coverage = result.face_coverage
+                    shot.lip_sync_error = None
+                    self._record_event(
+                        task,
+                        "口型",
+                        task.status,
+                        f"分镜 {shot.order} 已通过口型质量门禁",
+                    )
+                if progresses:
+                    task.metadata["lip_sync_progress"] = round(
+                        sum(progresses) / len(progresses)
+                    )
+                if lip_sync_stages:
+                    task.metadata["lip_sync_stage"] = lip_sync_stages[0]
+                if lip_sync_elapsed:
+                    task.metadata["lip_sync_elapsed_seconds"] = max(lip_sync_elapsed)
+                pending_lip_sync = any(
+                    shot.lip_sync_status == LipSyncStatus.QUEUED
                     for shot in task.content_plan.shots
-                    if shot.media_path is not None
+                )
+                if pending_lip_sync:
+                    self.store.save(task)
+                    return
+                talking_shots = [
+                    shot
+                    for shot in task.content_plan.shots
+                    if shot.presentation_mode == ShotPresentationMode.TALKING_HEAD
                 ]
-                task.status = TaskStatus.COMPOSING
-                self._complete_stage(task)
-                self._record_event(task, "合成", task.status, "全部素材就绪，进入视频合成")
-                self.store.save(task)
-                self._set_run_status(task, "running", "全部素材已生成，正在合成视频")
+                task.metadata["lip_sync_summary"] = {
+                    "requested": len(talking_shots),
+                    "completed": sum(
+                        shot.lip_sync_status == LipSyncStatus.COMPLETE
+                        for shot in talking_shots
+                    ),
+                    "fallback": sum(
+                        shot.lip_sync_status == LipSyncStatus.SKIPPED
+                        for shot in talking_shots
+                    ),
+                    "runtime": "configured",
+                }
+                self._finish_assets(task)
 
             if task.status == TaskStatus.COMPOSING:
                 task.generation_job_id = self.mpt.create_video(task)
@@ -415,11 +619,16 @@ class AutomationEngine:
                 )
                 status = "published" if task.status == TaskStatus.PUBLISHED else "failed"
                 self._finish_run(task, status, "自动流程执行完成")
-        except MediaRuntimeUnavailableError:
+        except (MediaRuntimeUnavailableError, LipSyncRuntimeUnavailableError):
+            is_lip_sync = task.status == TaskStatus.LIP_SYNCING
             self._wait_for_runtime(
                 task,
-                "comfyui",
-                "ComfyUI 正在忙碌或暂时无法响应，现有生成作业将自动续跑",
+                "lip_sync" if is_lip_sync else "generation_engine",
+                (
+                    "唇形同步运行时暂时无法响应，现有作业会保留并自动续跑"
+                    if is_lip_sync
+                    else "生成引擎暂时无法响应，现有作业会保留并自动续跑"
+                ),
             )
             logger.warning("media runtime temporarily unavailable: task_id=%s", task.id)
         except Exception as exc:
@@ -451,6 +660,159 @@ class AutomationEngine:
                 self.store.save(task)
             logger.exception("automation task failed: task_id=%s", task.id)
 
+    def _start_lip_sync_or_finish(self, task: ContentTask) -> None:
+        if task.content_plan is None:
+            raise ValueError("content plan is missing")
+        talking_shots = [
+            shot
+            for shot in task.content_plan.shots
+            if shot.presentation_mode == ShotPresentationMode.TALKING_HEAD
+        ]
+        for shot in task.content_plan.shots:
+            if shot.presentation_mode == ShotPresentationMode.NARRATION:
+                shot.effective_presentation_mode = ShotPresentationMode.NARRATION
+                shot.lip_sync_status = LipSyncStatus.SKIPPED
+        if not talking_shots:
+            self._finish_assets(task)
+            return
+
+        for shot in talking_shots:
+            if not shot.audio_path:
+                shot.audio_path = str(
+                    self.tts.synthesize(
+                        task.id,
+                        shot.narration,
+                        clip_id=f"shot-{shot.id}",
+                    )
+                )
+                self._record_event(
+                    task,
+                    "配音",
+                    task.status,
+                    f"分镜 {shot.order} 独立口型驱动音频已生成",
+                )
+                self.store.save(task)
+
+        if not getattr(self, "lip_sync_enabled", False):
+            for shot in talking_shots:
+                self._fallback_lip_sync(
+                    shot,
+                    "本地唇形模型尚未安装，已安全降级为旁白镜头",
+                )
+            task.metadata["lip_sync_summary"] = {
+                "requested": len(talking_shots),
+                "completed": 0,
+                "fallback": len(talking_shots),
+                "runtime": "not_installed",
+            }
+            self._record_event(
+                task,
+                "口型",
+                task.status,
+                f"{len(talking_shots)} 个讲话分镜已降级为旁白；安装唇形模型后将自动启用",
+            )
+            self._finish_assets(task)
+            return
+
+        task.status = TaskStatus.LIP_SYNCING
+        task.metadata["lip_sync_progress"] = 0
+        self._complete_stage(task)
+        self._record_event(
+            task,
+            "口型",
+            task.status,
+            f"准备为 {len(talking_shots)} 个正面讲话分镜执行音频驱动口型同步",
+        )
+        self.store.save(task)
+        self._set_run_status(task, "running", "正在执行分镜级唇形同步与质量门禁")
+
+    def _handle_lip_sync_failure(self, task: ContentTask, shot, reason: str) -> None:
+        shot.lip_sync_status = LipSyncStatus.FAILED
+        shot.lip_sync_error = reason
+        if not getattr(self, "lip_sync_fallback_to_narration", True):
+            raise ValueError(f"shot {shot.order} lip-sync failed: {reason}")
+        self._fallback_lip_sync(shot, reason)
+        self._record_event(
+            task,
+            "口型",
+            task.status,
+            f"分镜 {shot.order} 未通过口型门禁，已自动降级为旁白镜头：{reason}",
+        )
+
+    @staticmethod
+    def _fallback_lip_sync(shot, reason: str) -> None:
+        shot.lip_sync_status = LipSyncStatus.SKIPPED
+        shot.effective_presentation_mode = ShotPresentationMode.NARRATION
+        shot.lip_sync_fallback_reason = reason[:500]
+
+    def _lip_sync_quality_error(
+        self,
+        sync_score: float | None,
+        face_coverage: float | None,
+    ) -> str | None:
+        if sync_score is None or face_coverage is None:
+            return "唇形运行时未返回同步分数或正脸覆盖率"
+        min_sync = getattr(self, "lip_sync_min_score", 0.65)
+        min_face = getattr(self, "lip_sync_min_face_coverage", 0.80)
+        if sync_score < min_sync:
+            return f"口型同步分数 {sync_score:.2f} 低于门槛 {min_sync:.2f}"
+        if face_coverage < min_face:
+            return f"正脸有效覆盖率 {face_coverage:.2f} 低于门槛 {min_face:.2f}"
+        return None
+
+    def _finish_assets(self, task: ContentTask) -> None:
+        if task.content_plan is None:
+            raise ValueError("content plan is missing")
+        if self.frame_interpolation_enabled:
+            if not self.tts.interpolation_available():
+                self._wait_for_runtime(
+                    task,
+                    "frame_interpolation",
+                    "分镜已生成，等待本地 RIFE 插帧运行时恢复",
+                )
+                return
+            interpolation = task.metadata.setdefault("frame_interpolation", {})
+            for shot in task.content_plan.shots:
+                if shot.id in interpolation:
+                    shot.media_path = interpolation[shot.id]["output"]
+                    continue
+                if not shot.media_path:
+                    raise ValueError(f"shot {shot.order} media path is missing")
+                source = shot.media_path
+                output, provider = self.tts.interpolate(
+                    task.id,
+                    shot.id,
+                    source,
+                    multiplier=self.frame_interpolation_multiplier,
+                )
+                shot.media_path = str(output)
+                interpolation[shot.id] = {
+                    "source": source,
+                    "output": str(output),
+                    "provider": provider,
+                    "multiplier": self.frame_interpolation_multiplier,
+                }
+                self._record_event(
+                    task,
+                    "流畅度",
+                    task.status,
+                    f"分镜 {shot.order} 已完成 {self.frame_interpolation_multiplier} 倍 AI 插帧",
+                )
+                self.store.save(task)
+        task.video_materials = [
+            shot.media_path
+            for shot in task.content_plan.shots
+            if shot.media_path is not None
+        ]
+        task.status = TaskStatus.COMPOSING
+        self._complete_stage(task)
+        detail = "全部素材就绪，进入视频合成"
+        if self.frame_interpolation_enabled:
+            detail = "全部素材与 AI 插帧已就绪，进入 48 FPS 视频合成"
+        self._record_event(task, "合成", task.status, detail)
+        self.store.save(task)
+        self._set_run_status(task, "running", "全部素材已生成，正在合成视频")
+
     def cancel_task(self, task_id: str) -> ContentTask:
         task = self.store.get(task_id)
         terminal = {
@@ -473,7 +835,10 @@ class AutomationEngine:
         if task.status != TaskStatus.AUTOMATION_FAILED:
             raise ValueError("only failed automation tasks can be retried")
         failed_stage = str(task.metadata.get("automation_retry", {}).get("stage") or "")
-        if failed_stage == TaskStatus.ASSETS_GENERATING.value or (
+        if failed_stage == TaskStatus.LIP_SYNCING.value:
+            task.status = TaskStatus.LIP_SYNCING
+            self._prepare_retry(task, reset_incomplete=True)
+        elif failed_stage == TaskStatus.ASSETS_GENERATING.value or (
             task.content_plan and task.audio_path and not task.media_path
         ):
             task.status = TaskStatus.ASSETS_GENERATING
@@ -494,6 +859,20 @@ class AutomationEngine:
         return task
 
     def _prepare_retry(self, task: ContentTask, *, reset_incomplete: bool = False) -> None:
+        if task.status == TaskStatus.LIP_SYNCING and task.content_plan is not None:
+            for shot in task.content_plan.shots:
+                should_reset = shot.lip_sync_status == LipSyncStatus.FAILED or (
+                    reset_incomplete
+                    and shot.presentation_mode == ShotPresentationMode.TALKING_HEAD
+                    and shot.lip_sync_status != LipSyncStatus.COMPLETE
+                )
+                if not should_reset:
+                    continue
+                shot.lip_sync_status = LipSyncStatus.PENDING
+                shot.lip_sync_job_id = None
+                shot.lip_sync_provider = None
+                shot.lip_sync_error = None
+            return
         if task.status != TaskStatus.ASSETS_GENERATING or task.content_plan is None:
             return
         for shot in task.content_plan.shots:
@@ -511,6 +890,10 @@ class AutomationEngine:
         ):
             task.metadata.pop("cover_generation_job_id", None)
             task.metadata.pop("cover_status", None)
+        character_status = task.metadata.get("character_status")
+        if character_status == AssetStatus.FAILED.value:
+            task.metadata.pop("character_generation_job_id", None)
+            task.metadata.pop("character_status", None)
         task.status = TaskStatus.PLANNED
 
     def _wait_for_runtime(self, task: ContentTask, component: str, detail: str) -> None:

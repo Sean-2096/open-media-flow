@@ -98,6 +98,10 @@ def content_package():
         "hook": "他以为门外没人，手机却响了。",
         "creative_direction": "低饱和电影感，快速切镜，结尾用暖光完成情绪反转。",
         "cover_prompt": "vertical cinematic hallway, young man, warm rim light, no text",
+        "character_reference_prompt": (
+            "original young man, fixed face and navy jacket, full body character reference, "
+            "neutral closed mouth, simple background, vertical composition, no text"
+        ),
         "shots": [
             {
                 "order": index,

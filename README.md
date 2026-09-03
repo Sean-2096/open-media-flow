@@ -33,8 +33,12 @@ OpenMediaFlow 是一个本地优先的全自动内容运营项目，目标平台
 - `MinIO`：预留的产物归档服务。
 
 Docker 负责隔离服务，不会自动带来模型，也无法在 macOS 上直接获得 Metal/MPS GPU。
-因此数据库、API 和合成引擎运行在 Docker；LLM、ComfyUI 和系统中文语音运行在宿主机，
+因此数据库、API 和合成引擎运行在 Docker；LLM、ComfyUI、神经配音与 AI 插帧运行在宿主机，
 但它们的启动脚本、配置、工作流和产物仍全部由本项目管理。
+
+对使用者而言，ComfyUI 只是 OpenMediaFlow 当前采用的内部画面执行引擎，不是需要单独
+操作的产品。控制台、任务状态、重试、日志与生命周期均由 OpenMediaFlow 统一管理。
+后续可在媒体 Provider 边界替换为 Diffusers 直连实现，业务编排与页面无需随之改写。
 
 ## 单项目边界
 
@@ -53,9 +57,16 @@ open-media-flow/
 
 ## 当前可用状态
 
-- 已可用：Qwen 完整内容包与分镜、Postgres 自动状态机、本机中文 TTS、视频合成、
+- 已可用：Qwen 完整内容包与分镜、Postgres 自动状态机、Qwen3-TTS 神经配音、
+  角色母版驱动的 LTX 图生视频、RIFE-MLX 24→48 FPS 插帧、视频合成、
   ComfyUI 图片/视频生成、FFprobe/规则/LLM 审核、dry-run 发布。
-- 已选本机模型：SDXL Turbo 负责封面，LTX-Video 2B distilled 负责竖屏视频镜头；模型
+- 已接入口型编排框架：计划可选旁白、混合讲述或正面讲话；讲话分镜拥有独立音频、
+  运行任务、同步分数、正脸覆盖率、重试和旁白降级记录。Apple Silicon 可运行
+  `./scripts/install-lip-sync-runtime.sh` 安装隔离的 MuseTalk v1.5 MPS 运行时；示例配置
+  默认关闭，安装后再将 `OMF_LIP_SYNC_ENABLED` 设为 `true`。内部推理引擎使用 8091，
+  现有 8090 媒体服务统一提供异步任务、阶段耗时、质量检测与安全路径校验。
+- 已选本机模型：RealVisXL V5.0 Lightning FP16 负责写实角色母版与封面，
+  LTX-Video 2B distilled 负责竖屏视频镜头；模型
   权重和 ComfyUI 运行时均保存在 `data/comfyui`。
 - 首次真实验证完成前，`.env` 保持 `OMF_MEDIA_GENERATION_ENABLED=false`。自动任务会在
   `planned` 状态安全等待，不会悄悄回退成“拿库存素材假装 AI 生成”。验证完成后再启用。
@@ -69,23 +80,26 @@ open-media-flow/
 cp .env.example .env
 ```
 
-至少修改 `.env` 中标记为 `change-me` 的本地密码。然后分别启动宿主机运行时：
+至少修改 `.env` 中标记为 `change-me` 的本地密码。首次使用先安装本机媒体运行时
+（模型会保存在项目 `data/models`，以后无需重复下载）：
 
 ```bash
-# 终端 1：本地 Qwen；首次运行会下载约 9GB GGUF，之后复用 data/models
-./scripts/start-llm.sh
-
-# 终端 2：macOS 中文配音运行时
-./scripts/start-media-runtime.sh
-
-# 终端 3：项目内 ComfyUI MPS 运行时
-./scripts/start-comfyui.sh
+./scripts/install-media-runtime.sh
 ```
 
-最后启动容器服务：
+安装完成后，使用一个命令启动完整产品：
 
 ```bash
-docker compose up -d --build
+./scripts/omf start
+```
+
+该命令会统一启动 Docker 服务、内容模型、画面生成引擎、配音和动态增强运行时。
+无需分别维护多个终端。常用运维命令：
+
+```bash
+./scripts/omf status
+./scripts/omf logs generation
+./scripts/omf stop
 ```
 
 入口：
@@ -96,8 +110,8 @@ docker compose up -d --build
 - 本机媒体运行时：http://127.0.0.1:8090/health
 - MinIO：http://127.0.0.1:9001
 
-不需要注册或登录工作流平台。控制台首次连接时粘贴 `.env` 中的 `OMF_API_KEY`；密钥
-只保存在当前浏览器标签页。
+不需要注册或登录工作流平台。通过控制台首页进入时会自动建立同源本地会话；一般无需
+手工输入 API KEY。
 
 ## 自动流程
 
@@ -134,9 +148,21 @@ curl -X POST http://127.0.0.1:8000/automations/<automation-id>/run \
 状态机会依次经过：
 
 ```text
-draft → planned → assets_generating → composing → generated
+draft → planned → assets_generating → lip_syncing（按需）→ composing → generated
       → approved / review_rejected → published / partial_failure
 ```
+
+`assets_generating` 会先生成一张原创角色母版，再让全部 LTX-Video 分镜引用同一形象；
+原始 24 FPS 分镜随后通过 RIFE-MLX 插值为 48 FPS，再交给合成器。最终文件也以
+48 FPS 编码，避免只有高帧率标签、没有真实中间运动帧。配音默认使用项目内的
+Qwen3-TTS 1.7B 8-bit 模型和 `Vivian`
+中文音色，可通过 `.env` 的 `OMF_TTS_VOICE` 与 `OMF_TTS_INSTRUCT` 调整。
+
+正面讲话分镜会使用 768×1024、五步 DPM++ SDE Karras 采样的写实腰部以上角色母版作为稳定口型底片，
+而不是把已有自主嘴部运动的普通视频二次改嘴；原始动态分镜仍保留为质量失败时的
+旁白回退素材。随后系统生成独立驱动音频，再进入可插拔唇形运行时。运行时必须返回
+`sync_score` 和 `face_coverage`；低于配置门槛时，系统自动保留原始视频并降级为旁白。
+未安装模型时选择讲话模式也不会卡住任务，详情页会明确展示降级原因。
 
 在媒体模型尚未启用时，流程停在 `planned`，运行记录显示
 `waiting_for_media_runtime`。安装模型和工作流后将 `OMF_MEDIA_GENERATION_ENABLED=true`，

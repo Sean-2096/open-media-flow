@@ -1,5 +1,6 @@
 .env
 .venv/
+.venv-media/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
@@ -16,6 +17,9 @@ data/video-engine/*
 data/output/video-engine/*
 data/comfyui/*
 !data/comfyui/README.md
+data/lip-sync/*
+!data/lip-sync/README.md
+data/runtime/*
 
 # macOS / editor
 .DS_Store

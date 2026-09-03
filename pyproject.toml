@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "open-media-flow"
-version = "0.6.0"
+version = "0.7.0"
 description = "OpenMediaFlow: local-first AI content generation, review, and multi-platform publishing."
 requires-python = ">=3.11"
 dependencies = [

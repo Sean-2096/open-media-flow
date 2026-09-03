@@ -19,10 +19,30 @@ class Platform(StrEnum):
     YOUTUBE = "youtube"
 
 
+class PresentationMode(StrEnum):
+    NARRATION = "narration"
+    MIXED = "mixed"
+    TALKING_HEAD = "talking_head"
+
+
+class ShotPresentationMode(StrEnum):
+    NARRATION = "narration"
+    TALKING_HEAD = "talking_head"
+
+
+class LipSyncStatus(StrEnum):
+    PENDING = "pending"
+    QUEUED = "queued"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class TaskStatus(StrEnum):
     DRAFT = "draft"
     PLANNED = "planned"
     ASSETS_GENERATING = "assets_generating"
+    LIP_SYNCING = "lip_syncing"
     COMPOSING = "composing"
     GENERATED = "generated"
     REVIEW_REJECTED = "review_rejected"
@@ -42,6 +62,7 @@ class TaskCreate(BaseModel):
     description: str = Field(default="", max_length=5_000)
     tags: list[str] = Field(default_factory=list, max_length=30)
     video_materials: list[str] = Field(default_factory=list, max_length=100)
+    presentation_mode: PresentationMode = PresentationMode.NARRATION
     contains_synthetic_media: bool = True
 
 
@@ -65,10 +86,21 @@ class ShotSpec(BaseModel):
     negative_prompt: str = Field(default="", max_length=1_000)
     duration_seconds: int = Field(default=5, ge=2, le=15)
     kind: AssetKind = AssetKind.VIDEO
+    presentation_mode: ShotPresentationMode = ShotPresentationMode.NARRATION
+    effective_presentation_mode: ShotPresentationMode | None = None
     provider: str | None = None
     status: AssetStatus = AssetStatus.PENDING
     generation_job_id: str | None = None
     media_path: str | None = None
+    audio_path: str | None = None
+    lip_sync_source_path: str | None = None
+    lip_sync_status: LipSyncStatus = LipSyncStatus.PENDING
+    lip_sync_job_id: str | None = None
+    lip_sync_provider: str | None = None
+    lip_sync_score: float | None = Field(default=None, ge=0, le=1)
+    face_coverage: float | None = Field(default=None, ge=0, le=1)
+    lip_sync_error: str | None = None
+    lip_sync_fallback_reason: str | None = None
     error: str | None = None
 
 
@@ -77,6 +109,7 @@ class ContentPlan(BaseModel):
     hook: str = Field(min_length=5, max_length=300)
     creative_direction: str = Field(min_length=5, max_length=1_000)
     cover_prompt: str = Field(min_length=10, max_length=2_000)
+    character_reference_prompt: str = Field(default="", max_length=2_000)
     shots: list[ShotSpec] = Field(min_length=3, max_length=12)
 
 
@@ -138,6 +171,7 @@ class AutomationCreate(BaseModel):
     topic: str = Field(min_length=2, max_length=500)
     platforms: list[Platform] = Field(min_length=1)
     video_materials: list[str] = Field(default_factory=list, max_length=100)
+    presentation_mode: PresentationMode = PresentationMode.NARRATION
     interval_minutes: int = Field(default=1440, ge=1, le=525_600)
     enabled: bool = True
 

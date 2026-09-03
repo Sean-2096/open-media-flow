@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(cd "${script_dir}/.." && pwd)"
+runtime_dir="${project_dir}/data/runtime"
+pid_dir="${runtime_dir}/pids"
+log_dir="${runtime_dir}/logs"
+
+cd "${project_dir}"
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ./.env
+  set +a
+fi
+
+llm_port="${LLM_LOCAL_PORT:-8081}"
+generation_port="${COMFYUI_PORT:-8188}"
+media_port="${LOCAL_MEDIA_RUNTIME_PORT:-8090}"
+lip_sync_port="${OMF_MUSETALK_PORT:-8091}"
+media_key="${LOCAL_MEDIA_RUNTIME_API_KEY:-${OMF_API_KEY:-}}"
+
+mkdir -p "${pid_dir}" "${log_dir}"
+
+ready_control() { curl -fsS --max-time 2 http://127.0.0.1:8000/health >/dev/null 2>&1; }
+ready_model() { curl -fsS --max-time 2 "http://127.0.0.1:${llm_port}/v1/models" >/dev/null 2>&1; }
+ready_generation() { curl -fsS --max-time 2 "http://127.0.0.1:${generation_port}/system_stats" >/dev/null 2>&1; }
+ready_media() { curl -fsS --max-time 2 -H "X-API-Key: ${media_key}" "http://127.0.0.1:${media_port}/health" >/dev/null 2>&1; }
+ready_lip_sync() { curl -fsS --max-time 2 "http://127.0.0.1:${lip_sync_port}/health" >/dev/null 2>&1; }
+ready_compositor() { curl -fsS --max-time 2 http://127.0.0.1:8082/ping >/dev/null 2>&1; }
+
+wait_until_ready() {
+  local check_fn="$1"
+  local attempts="${2:-60}"
+  local index
+  for ((index = 0; index < attempts; index += 1)); do
+    if "${check_fn}"; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
+start_native() {
+  local name="$1"
+  local label="$2"
+  local check_fn="$3"
+  local launcher="$4"
+  local ready_attempts="${5:-90}"
+  local pid_file="${pid_dir}/${name}.pid"
+  local log_file="${log_dir}/${name}.log"
+  local service_label="com.openmediaflow.${name}"
+
+  if "${check_fn}"; then
+    printf "  %-18s %s\n" "${label}" "已就绪"
+    return 0
+  fi
+
+  if [[ -f "${pid_file}" ]]; then
+    local existing_pid
+    existing_pid="$(tr -dc '0-9' < "${pid_file}")"
+    if [[ -n "${existing_pid}" ]] && kill -0 "${existing_pid}" 2>/dev/null; then
+      printf "  %-18s %s\n" "${label}" "正在启动"
+    else
+      rm -f "${pid_file}"
+    fi
+  fi
+
+  if [[ ! -f "${pid_file}" ]]; then
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      launchctl remove "${service_label}" >/dev/null 2>&1 || true
+      launchctl submit -l "${service_label}" -o "${log_file}" -e "${log_file}" -- "${launcher}"
+    else
+      nohup "${launcher}" >"${log_file}" 2>&1 &
+      echo "$!" >"${pid_file}"
+    fi
+    printf "  %-18s %s\n" "${label}" "启动中"
+  fi
+
+  if wait_until_ready "${check_fn}" "${ready_attempts}"; then
+    printf "  %-18s %s\n" "" "↳ 已就绪"
+  else
+    printf "  %-18s %s\n" "" "↳ 启动失败，查看 ${log_file}"
+    return 1
+  fi
+}
+
+status_line() {
+  local label="$1"
+  local check_fn="$2"
+  if "${check_fn}"; then
+    printf "  ● %-18s %s\n" "${label}" "就绪"
+  else
+    printf "  ○ %-18s %s\n" "${label}" "未运行"
+  fi
+}
+
+show_status() {
+  echo "OpenMediaFlow 运行状态"
+  status_line "控制与调度" ready_control
+  status_line "内容模型" ready_model
+  status_line "画面生成引擎" ready_generation
+  status_line "配音与动态增强" ready_media
+  if [[ "${OMF_LIP_SYNC_ENABLED:-false}" == "true" ]]; then
+    status_line "人物口型同步" ready_lip_sync
+  else
+    printf "  ○ %-18s %s\n" "人物口型同步" "未启用"
+  fi
+  status_line "成片合成器" ready_compositor
+  echo
+  echo "控制台：http://127.0.0.1:8000/"
+}
+
+start_all() {
+  echo "正在启动 OpenMediaFlow…"
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker 命令不可用，请先安装并启动 Docker Desktop。" >&2
+    exit 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    if [[ "$(uname -s)" == "Darwin" ]]; then open -a Docker; fi
+    echo "  Docker Desktop      启动中"
+    if ! wait_until_ready docker_ready 90; then
+      echo "Docker Desktop 未能在 90 秒内就绪。" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ "${OMF_SKIP_BUILD:-0}" == "1" ]]; then
+    docker compose up -d
+  else
+    docker compose up -d --build
+  fi
+
+  local failed=0
+  start_native "content-model" "内容模型" ready_model "${script_dir}/start-llm.sh" || failed=1
+  start_native "generation-engine" "画面生成引擎" ready_generation "${script_dir}/start-comfyui.sh" || failed=1
+  if [[ "${OMF_LIP_SYNC_ENABLED:-false}" == "true" ]]; then
+    start_native "lip-sync-engine" "人物口型同步" ready_lip_sync "${script_dir}/start-lip-sync-engine.sh" 300 || failed=1
+  fi
+  start_native "native-media" "配音与动态增强" ready_media "${script_dir}/start-media-runtime.sh" || failed=1
+  wait_until_ready ready_control 30 || failed=1
+
+  echo
+  show_status
+  if [[ "${failed}" == "1" ]]; then
+    echo "部分引擎未能启动；已启动的服务会保留运行。" >&2
+    exit 1
+  fi
+}
+
+docker_ready() { docker info >/dev/null 2>&1; }
+
+stop_native() {
+  local name="$1"
+  local label="$2"
+  local expected="$3"
+  local pid_file="${pid_dir}/${name}.pid"
+  local service_label="com.openmediaflow.${name}"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    if launchctl print "gui/$(id -u)/${service_label}" >/dev/null 2>&1; then
+      launchctl remove "${service_label}" >/dev/null 2>&1 || true
+      printf "  %-18s %s\n" "${label}" "已停止"
+    fi
+  fi
+  [[ -f "${pid_file}" ]] || return 0
+  local pid command
+  pid="$(tr -dc '0-9' < "${pid_file}")"
+  command="$(ps -p "${pid}" -o command= 2>/dev/null || true)"
+  if [[ -n "${pid}" && "${command}" == *"${expected}"* ]]; then
+    kill "${pid}" 2>/dev/null || true
+    printf "  %-18s %s\n" "${label}" "已停止"
+  fi
+  rm -f "${pid_file}"
+}
+
+stop_all() {
+  echo "正在停止 OpenMediaFlow…"
+  stop_native "native-media" "配音与动态增强" "local_media_runtime"
+  stop_native "lip-sync-engine" "人物口型同步" "server:app"
+  stop_native "generation-engine" "画面生成引擎" "ComfyUI"
+  stop_native "content-model" "内容模型" "llama-server"
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    docker compose stop
+  fi
+  echo "已停止；数据库与生成内容均已保留。"
+}
+
+show_logs() {
+  local component="${1:-}"
+  case "${component}" in
+    model) tail -f "${log_dir}/content-model.log" ;;
+    generation) tail -f "${log_dir}/generation-engine.log" ;;
+    media) tail -f "${log_dir}/native-media.log" ;;
+    lipsync) tail -f "${log_dir}/lip-sync-engine.log" ;;
+    "") docker compose logs -f --tail=100 ;;
+    *) echo "可用日志：model、generation、media、lipsync；不传参数查看 Docker 服务。" >&2; exit 2 ;;
+  esac
+}
+
+case "${1:-start}" in
+  start) start_all ;;
+  stop) stop_all ;;
+  restart) stop_all; start_all ;;
+  status) show_status ;;
+  logs) show_logs "${2:-}" ;;
+  *) echo "用法：./scripts/omf {start|stop|restart|status|logs [model|generation|media]}" >&2; exit 2 ;;
+esac

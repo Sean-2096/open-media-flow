@@ -60,8 +60,17 @@ class Settings:
     comfyui_output_dir: Path
     comfyui_image_workflow: Path
     comfyui_video_workflow: Path
+    comfyui_video_i2v_workflow: Path
     local_media_runtime_base_url: str
     local_media_runtime_api_key: str
+    lip_sync_enabled: bool
+    lip_sync_base_url: str
+    lip_sync_api_key: str
+    lip_sync_fallback_to_narration: bool
+    lip_sync_min_score: float
+    lip_sync_min_face_coverage: float
+    frame_interpolation_enabled: bool
+    frame_interpolation_multiplier: int
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -159,12 +168,47 @@ class Settings:
                     "COMFYUI_VIDEO_WORKFLOW", "/app/config/workflows/video.json"
                 )
             ).expanduser().resolve(),
+            comfyui_video_i2v_workflow=Path(
+                os.getenv(
+                    "COMFYUI_VIDEO_I2V_WORKFLOW",
+                    "/app/config/workflows/video_i2v.json",
+                )
+            ).expanduser().resolve(),
             local_media_runtime_base_url=os.getenv(
                 "LOCAL_MEDIA_RUNTIME_BASE_URL", "http://host.docker.internal:8090"
             ).rstrip("/"),
             local_media_runtime_api_key=(
                 os.getenv("LOCAL_MEDIA_RUNTIME_API_KEY", "")
                 or os.getenv("OMF_API_KEY", "change-me")
+            ),
+            lip_sync_enabled=_as_bool(os.getenv("OMF_LIP_SYNC_ENABLED", "false")),
+            lip_sync_base_url=os.getenv(
+                "OMF_LIP_SYNC_BASE_URL", "http://host.docker.internal:8090"
+            ).rstrip("/"),
+            lip_sync_api_key=(
+                os.getenv("OMF_LIP_SYNC_API_KEY", "")
+                or os.getenv("LOCAL_MEDIA_RUNTIME_API_KEY", "")
+                or os.getenv("OMF_API_KEY", "change-me")
+            ),
+            lip_sync_fallback_to_narration=_as_bool(
+                os.getenv("OMF_LIP_SYNC_FALLBACK_TO_NARRATION", "true")
+            ),
+            lip_sync_min_score=min(
+                1.0, max(0.0, float(os.getenv("OMF_LIP_SYNC_MIN_SCORE", "0.65")))
+            ),
+            lip_sync_min_face_coverage=min(
+                1.0,
+                max(
+                    0.0,
+                    float(os.getenv("OMF_LIP_SYNC_MIN_FACE_COVERAGE", "0.80")),
+                ),
+            ),
+            frame_interpolation_enabled=_as_bool(
+                os.getenv("OMF_FRAME_INTERPOLATION_ENABLED", "true")
+            ),
+            frame_interpolation_multiplier=min(
+                4,
+                max(2, int(os.getenv("OMF_FRAME_INTERPOLATION_MULTIPLIER", "2"))),
             ),
         )
 

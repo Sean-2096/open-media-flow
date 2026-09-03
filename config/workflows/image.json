@@ -2,7 +2,7 @@
   "1": {
     "class_type": "CheckpointLoaderSimple",
     "inputs": {
-      "ckpt_name": "sd_xl_turbo_1.0_fp16.safetensors"
+      "ckpt_name": "RealVisXL_V5.0_Lightning_fp16.safetensors"
     }
   },
   "2": {
@@ -31,10 +31,10 @@
     "class_type": "KSampler",
     "inputs": {
       "seed": "{{SEED}}",
-      "steps": 1,
-      "cfg": 1,
-      "sampler_name": "euler_ancestral",
-      "scheduler": "normal",
+      "steps": 5,
+      "cfg": 1.5,
+      "sampler_name": "dpmpp_sde",
+      "scheduler": "karras",
       "denoise": 1,
       "model": ["1", 0],
       "positive": ["2", 0],
