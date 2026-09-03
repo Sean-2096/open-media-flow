@@ -4,7 +4,16 @@ from fastapi.testclient import TestClient
 
 from open_media_flow import api
 from open_media_flow.llm import GeneratedMetadata, LLMGeneration
-from open_media_flow.models import Automation, ContentTask, TaskStatus
+from open_media_flow.models import (
+    AuditCheck,
+    AuditReport,
+    Automation,
+    ContentTask,
+    Platform,
+    PublishResult,
+    TaskStatus,
+)
+from open_media_flow.mpt import VideoJobStatus
 from open_media_flow.store import JsonTaskStore
 
 
@@ -131,6 +140,66 @@ def test_task_preview_rejects_media_outside_allowed_roots(tmp_path, monkeypatch)
     assert response.status_code == 403
 
 
+def test_read_task_refreshes_manual_video_status(tmp_path, monkeypatch):
+    output = tmp_path / "output" / "video-job-1" / "final-1.mp4"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"video")
+    task_store = JsonTaskStore(tmp_path / "tasks.json")
+    task = task_store.create(
+        ContentTask(
+            topic="手动视频任务",
+            platforms=[Platform.BILIBILI],
+            generation_job_id="video-job-1",
+            status=TaskStatus.GENERATED,
+        )
+    )
+
+    class StubMPT:
+        def get_video_status(self, task_id):
+            assert task_id == "video-job-1"
+            return VideoJobStatus(state=1, progress=100, media_path=output)
+
+    monkeypatch.setattr(api, "store", task_store)
+    monkeypatch.setattr(api, "mpt", StubMPT())
+    client = TestClient(api.app)
+
+    response = client.get(
+        f"/tasks/{task.id}",
+        headers={"X-API-Key": "change-me"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["media_path"] == str(output)
+    assert response.json()["metadata"]["video_progress"] == 100
+    assert task_store.get(task.id).media_path == str(output)
+
+
+def test_publish_rejects_stale_approved_audit(tmp_path, monkeypatch):
+    task_store = JsonTaskStore(tmp_path / "tasks.json")
+    task = task_store.create(
+        ContentTask(
+            topic="已修改的内容",
+            platforms=[Platform.YOUTUBE],
+            status=TaskStatus.DRAFT,
+            audit=AuditReport(
+                approved=True,
+                score=100,
+                checks=[AuditCheck(name="media", passed=True, score=100, detail="ok")],
+            ),
+        )
+    )
+    monkeypatch.setattr(api, "store", task_store)
+    client = TestClient(api.app)
+
+    response = client.post(
+        f"/tasks/{task.id}/publish",
+        headers={"X-API-Key": "change-me"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "task must pass review before publishing"
+
+
 def test_dashboard_can_update_automation_and_cancel_task(monkeypatch):
     class StubAutomationEngine:
         def update_automation(self, automation_id, body):
@@ -223,6 +292,21 @@ def test_generate_metadata_records_selected_endpoint(tmp_path, monkeypatch):
         headers=headers,
         json={"topic": "统一模型路由", "platforms": ["youtube"]},
     ).json()
+    reviewed = api.store.get(created["id"])
+    reviewed.status = TaskStatus.APPROVED
+    reviewed.audit = AuditReport(
+        approved=True,
+        score=100,
+        checks=[AuditCheck(name="media", passed=True, score=100, detail="ok")],
+    )
+    reviewed.publish_results = [
+        PublishResult(
+            platform=Platform.YOUTUBE,
+            success=True,
+            detail="previous publish",
+        )
+    ]
+    api.store.save(reviewed)
 
     generated = client.post(
         f"/tasks/{created['id']}/generate-metadata",
@@ -234,3 +318,6 @@ def test_generate_metadata_records_selected_endpoint(tmp_path, monkeypatch):
         "endpoint": "fallback",
         "model": "cloud-review-model",
     }
+    assert generated.json()["status"] == "draft"
+    assert generated.json()["audit"] is None
+    assert generated.json()["publish_results"] == []

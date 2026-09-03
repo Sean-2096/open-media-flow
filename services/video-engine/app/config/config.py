@@ -563,6 +563,11 @@ ui = _SynchronizedConfig(
     )
 )
 
+
+def get_api_key() -> object:
+    return os.getenv("MPT_API_KEY") or app.get("api_key", "")
+
+
 hostname = socket.gethostname()
 
 log_level = _cfg.get("log_level", "DEBUG")

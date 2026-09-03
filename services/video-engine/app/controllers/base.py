@@ -55,7 +55,7 @@ def verify_token(
     个值。参数声明同时让 Swagger 展示该请求头，便于受保护环境调试。
     """
 
-    configured_key = config.app.get("api_key", "")
+    configured_key = config.get_api_key()
     if configured_key in (None, ""):
         return None
 

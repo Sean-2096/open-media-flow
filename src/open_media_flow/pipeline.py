@@ -18,7 +18,11 @@ class Pipeline:
         return self.store.save(task)
 
     def publish(self, task: ContentTask) -> ContentTask:
-        if not task.audit or not task.audit.approved:
+        if (
+            task.status != TaskStatus.APPROVED
+            or not task.audit
+            or not task.audit.approved
+        ):
             raise ValueError("task must pass review before publishing")
         task.status = TaskStatus.PUBLISHING
         self.store.save(task)

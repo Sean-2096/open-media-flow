@@ -182,6 +182,34 @@ def get_task(task_id: str) -> ContentTask:
         raise HTTPException(status_code=404, detail="task not found") from exc
 
 
+def invalidate_review(task: ContentTask) -> None:
+    task.audit = None
+    task.publish_results = []
+
+
+def refresh_manual_video_task(task: ContentTask) -> ContentTask:
+    if task.automation_id or not task.generation_job_id or task.media_path:
+        return task
+    try:
+        video = mpt.get_video_status(task.generation_job_id)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(
+            status_code=502, detail=f"MoneyPrinterTurbo status request failed: {exc}"
+        ) from exc
+
+    previous_progress = task.metadata.get("video_progress")
+    task.metadata["video_progress"] = video.progress
+    changed = previous_progress != video.progress
+    if video.error and task.automation_error != video.error:
+        task.automation_error = video.error
+        changed = True
+    elif video.media_path is not None:
+        task.media_path = str(video.media_path)
+        task.automation_error = None
+        changed = True
+    return store.save(task) if changed else task
+
+
 def media_file_response(value: str | None, label: str) -> FileResponse:
     if not value:
         raise HTTPException(status_code=404, detail=f"{label} has not been generated")
@@ -335,7 +363,7 @@ def delete_automation(automation_id: str) -> None:
 
 @app.get("/tasks/{task_id}", response_model=ContentTask, dependencies=[Depends(require_api_key)])
 def read_task(task_id: str) -> ContentTask:
-    return get_task(task_id)
+    return refresh_manual_video_task(get_task(task_id))
 
 
 @app.post(
@@ -382,6 +410,8 @@ def generate_metadata(task_id: str) -> ContentTask:
             "endpoint": generation.endpoint,
             "model": generation.model,
         }
+        invalidate_review(task)
+        task.status = TaskStatus.GENERATED if task.media_path else TaskStatus.DRAFT
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=f"LLM generation failed: {exc}") from exc
     return store.save(task)
@@ -407,6 +437,7 @@ def generate_content_plan(task_id: str) -> ContentTask:
             "endpoint": generation.endpoint,
             "model": generation.model,
         }
+        invalidate_review(task)
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=f"LLM planning failed: {exc}") from exc
     return store.save(task)
@@ -423,6 +454,9 @@ def generate_video(task_id: str) -> ContentTask:
         raise HTTPException(status_code=409, detail="generate or provide a script first")
     try:
         task.generation_job_id = mpt.create_video(task)
+        task.media_path = None
+        task.automation_error = None
+        invalidate_review(task)
         task.status = TaskStatus.GENERATED
     except (ValueError, OSError) as exc:
         raise HTTPException(
@@ -444,6 +478,7 @@ def attach_media(task_id: str, body: MediaAttach) -> ContentTask:
         raise HTTPException(status_code=404, detail=f"media not found: {exc}") from exc
     except UnsafeMediaPathError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    invalidate_review(task)
     task.status = TaskStatus.GENERATED
     return store.save(task)
 
@@ -454,7 +489,8 @@ def attach_media(task_id: str, body: MediaAttach) -> ContentTask:
     dependencies=[Depends(require_api_key)],
 )
 def preview_task_video(task_id: str) -> FileResponse:
-    return media_file_response(get_task(task_id).media_path, "final video")
+    task = refresh_manual_video_task(get_task(task_id))
+    return media_file_response(task.media_path, "final video")
 
 
 @app.get(
@@ -486,7 +522,7 @@ def preview_task_shot(task_id: str, shot_id: str) -> FileResponse:
     dependencies=[Depends(require_api_key)],
 )
 def audit_task(task_id: str) -> ContentTask:
-    return pipeline.audit(get_task(task_id))
+    return pipeline.audit(refresh_manual_video_task(get_task(task_id)))
 
 
 @app.post(

@@ -22,7 +22,7 @@ async def application_lifespan(_: FastAPI):
     """集中处理 API 进程启动恢复和关闭日志。"""
     logger.info("startup event")
 
-    configured_api_key = config.app.get("api_key", "")
+    configured_api_key = config.get_api_key()
     if configured_api_key in (None, ""):
         logger.warning(
             "API key authentication is disabled; keep the API on a trusted network"
