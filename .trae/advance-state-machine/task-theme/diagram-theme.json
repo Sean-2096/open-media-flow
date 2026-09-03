@@ -1,0 +1,245 @@
+{
+  "id": "task-statemachine-status",
+  "version": 1,
+  "tags": [
+    "task",
+    "evidence-backed"
+  ],
+  "brandEvidence": {
+    "name": "Scene-derived state machine status palette",
+    "checkedAt": "2026-09-03",
+    "sources": [
+      {
+        "kind": "scene-derived",
+        "reference": "open-media-flow AutomationEngine._advance task state machine; soft success/danger/warning/neutral fills for real terminal states only"
+      }
+    ],
+    "derivations": [
+      {
+        "role": "node.primary.text",
+        "method": "wcag-contrast-choice",
+        "basis": "Compared #FFFFFF and #0A0A0A on #654ACB; chose #FFFFFF."
+      },
+      {
+        "role": "node.emphasis.fill",
+        "method": "primary-overlay",
+        "basis": "Blended #654ACB at 12% over #F7F6F5; derived #E5E1F0."
+      },
+      {
+        "role": "node.emphasis.text",
+        "method": "wcag-contrast-choice",
+        "basis": "Compared #FFFFFF and #0A0A0A on #E5E1F0; chose #0A0A0A."
+      },
+      {
+        "role": "data.labelRoles[0].text",
+        "method": "wcag-contrast-choice",
+        "fill": "#22A5F7",
+        "basis": "Compared #FFFFFF and #0A0A0A on #22A5F7; chose #0A0A0A."
+      },
+      {
+        "role": "data.labelRoles[1].text",
+        "method": "wcag-contrast-choice",
+        "fill": "#1DC981",
+        "basis": "Compared #FFFFFF and #0A0A0A on #1DC981; chose #0A0A0A."
+      },
+      {
+        "role": "data.labelRoles[2].text",
+        "method": "wcag-contrast-choice",
+        "fill": "#F87454",
+        "basis": "Compared #FFFFFF and #0A0A0A on #F87454; chose #0A0A0A."
+      },
+      {
+        "role": "data.labelRoles[3].text",
+        "method": "wcag-contrast-choice",
+        "fill": "#EDAA45",
+        "basis": "Compared #FFFFFF and #0A0A0A on #EDAA45; chose #0A0A0A."
+      },
+      {
+        "role": "data.labelRoles[4].text",
+        "method": "wcag-contrast-choice",
+        "fill": "#859EAD",
+        "basis": "Compared #FFFFFF and #0A0A0A on #859EAD; chose #0A0A0A."
+      },
+      {
+        "role": "data.labelRoles[5].text",
+        "method": "wcag-contrast-choice",
+        "fill": "#E7F6EC",
+        "basis": "Compared #FFFFFF and #0A0A0A on #E7F6EC; chose #0A0A0A."
+      },
+      {
+        "role": "data.labelRoles[6].text",
+        "method": "wcag-contrast-choice",
+        "fill": "#FDECEA",
+        "basis": "Compared #FFFFFF and #0A0A0A on #FDECEA; chose #0A0A0A."
+      },
+      {
+        "role": "data.labelRoles[7].text",
+        "method": "wcag-contrast-choice",
+        "fill": "#FDF3E3",
+        "basis": "Compared #FFFFFF and #0A0A0A on #FDF3E3; chose #0A0A0A."
+      },
+      {
+        "role": "data.labelRoles[8].text",
+        "method": "wcag-contrast-choice",
+        "fill": "#F0F1F2",
+        "basis": "Compared #FFFFFF and #0A0A0A on #F0F1F2; chose #0A0A0A."
+      }
+    ]
+  },
+  "document": {
+    "background": "#F7F6F5",
+    "text": "#0A0A0A",
+    "mutedText": "#404040",
+    "connector": "#737373",
+    "primaryConnector": "#654ACB"
+  },
+  "node": {
+    "neutral": {
+      "fill": "#FFFFFF",
+      "stroke": "#7373735C",
+      "text": "#0A0A0A"
+    },
+    "primary": {
+      "fill": "#654ACB",
+      "stroke": "#654ACB",
+      "text": "#FFFFFF"
+    },
+    "emphasis": {
+      "fill": "#E5E1F0",
+      "stroke": "#654ACB",
+      "text": "#0A0A0A"
+    },
+    "secondary": {
+      "fill": "#FAFAFA",
+      "stroke": "#7373732E",
+      "text": "#0A0A0A"
+    }
+  },
+  "style": {
+    "shape": {
+      "roughness": 0,
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "fillStyle": "solid",
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    "text": {
+      "fontFamily": "helvetica",
+      "fontFamilyAliases": [
+        2,
+        "2"
+      ],
+      "codeFontFamily": "cascadia",
+      "codeFontFamilyAliases": [
+        3,
+        "3"
+      ],
+      "fontSize": 16,
+      "groupTitleFontSize": 20,
+      "titleFontSize": 28
+    },
+    "arrow": {
+      "roughness": 0,
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "opacity": 100,
+      "route": "straight",
+      "startArrowhead": null,
+      "endArrowhead": "triangle",
+      "roundness": null,
+      "elbowed": false
+    },
+    "allowed": {
+      "strokeWidths": [
+        1,
+        2
+      ],
+      "strokeStyles": [
+        "solid",
+        "dashed"
+      ],
+      "rectangleRoundnessTypes": [
+        null,
+        3
+      ],
+      "arrowRoutes": [
+        "straight",
+        "elbowed",
+        "curved"
+      ],
+      "arrowheads": [
+        null,
+        "triangle"
+      ]
+    }
+  },
+  "data": {
+    "accents": [],
+    "other": "#859EAD",
+    "labelRoles": [
+      {
+        "fill": "#22A5F7",
+        "text": "#0A0A0A"
+      },
+      {
+        "fill": "#1DC981",
+        "text": "#0A0A0A"
+      },
+      {
+        "fill": "#F87454",
+        "text": "#0A0A0A"
+      },
+      {
+        "fill": "#EDAA45",
+        "text": "#0A0A0A"
+      },
+      {
+        "fill": "#859EAD",
+        "text": "#0A0A0A"
+      },
+      {
+        "fill": "#E7F6EC",
+        "text": "#0A0A0A"
+      },
+      {
+        "fill": "#FDECEA",
+        "text": "#0A0A0A"
+      },
+      {
+        "fill": "#FDF3E3",
+        "text": "#0A0A0A"
+      },
+      {
+        "fill": "#F0F1F2",
+        "text": "#0A0A0A"
+      }
+    ]
+  },
+  "semantic": {
+    "success": {
+      "fill": "#E7F6EC",
+      "stroke": "#1DC981"
+    },
+    "danger": {
+      "fill": "#FDECEA",
+      "stroke": "#F87454"
+    },
+    "warning": {
+      "fill": "#FDF3E3",
+      "stroke": "#EDAA45"
+    },
+    "neutral": {
+      "fill": "#F0F1F2",
+      "stroke": "#859EAD"
+    }
+  },
+  "series": [
+    "#22A5F7",
+    "#1DC981",
+    "#F87454",
+    "#EDAA45"
+  ]
+}

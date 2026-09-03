@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "primitives": "./primitives.json",
+  "defaultUiTheme": "warm-gray",
+  "defaultDiagramTheme": "task-statemachine-status",
+  "uiThemes": {
+    "warm-gray": "./ui-theme.json"
+  },
+  "diagramThemes": {
+    "task-statemachine-status": "./diagram-theme.json"
+  }
+}

@@ -55,6 +55,14 @@
              )
              mask_list.append(mask_array)
              crop_box_list.append(crop_box)
+@@ -270,6 +288,7 @@ def prepare_avatar(video_bytes: bytes) -> dict:
+
+         return {
+             "fps": fps,
++            "is_static_source": len(img_list) == 1,
+             "coord_list_cycle": valid_coords + valid_coords[::-1],
+             "frame_list_cycle": valid_frames + valid_frames[::-1],
+             "input_latent_list_cycle": input_latent_list + input_latent_list[::-1],
 @@ -280,8 +298,10 @@ def prepare_avatar(video_bytes: bytes) -> dict:
          shutil.rmtree(tmp, ignore_errors=True)
  
@@ -67,6 +75,42 @@
      prof = {}
      _t0 = time.time()
  
+@@ -315,6 +336,11 @@ def run_lipsync(avatar: dict, audio_bytes: bytes, batch_size: int = 16) -> bytes:
+         latent_cycle = avatar["input_latent_list_cycle"]
+         mask_cycle = avatar["mask_list_cycle"]
+         crop_box_cycle = avatar["crop_box_list_cycle"]
++        temporal_smoothing = (
++            float(os.environ.get("MUSETALK_TEMPORAL_SMOOTHING", "0.12"))
++            if avatar.get("is_static_source")
++            else 0.0
++        )
+
+         gen = datagen(whisper_chunks, latent_cycle, batch_size, 0, device)
+         res_frame_list = []
+@@ -354,6 +380,7 @@ def run_lipsync(avatar: dict, audio_bytes: bytes, batch_size: int = 16) -> bytes:
+         assert ff_proc.stdin is not None
+         blend_ms = 0
+         pipe_ms = 0
++        previous_face = None
+         for i, res_frame in enumerate(res_frame_list):
+             idx = i % len(coord_cycle)
+             x1, y1, x2, y2 = coord_cycle[idx]
+@@ -362,6 +389,15 @@ def run_lipsync(avatar: dict, audio_bytes: bytes, batch_size: int = 16) -> bytes:
+                 rs = cv2.resize(res_frame.astype(np.uint8), (x2 - x1, y2 - y1))
+             except Exception:
+                 continue
++            if previous_face is not None and temporal_smoothing > 0:
++                rs = cv2.addWeighted(
++                    rs,
++                    1.0 - temporal_smoothing,
++                    previous_face,
++                    temporal_smoothing,
++                    0,
++                )
++            previous_face = rs
+             _t2 = time.time()
+             combined = get_image_blending(
+                 ori, rs, [x1, y1, x2, y2],
 @@ -419,7 +439,18 @@ class StreamReq(BaseModel):
  
  @app.get("/health")

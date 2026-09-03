@@ -164,6 +164,12 @@ Qwen3-TTS 1.7B 8-bit 模型和 `Vivian`
 `sync_score` 和 `face_coverage`；低于配置门槛时，系统自动保留原始视频并降级为旁白。
 未安装模型时选择讲话模式也不会卡住任务，详情页会明确展示降级原因。
 
+MuseTalk 的默认融合参数针对本机写实人物做了保守收口：缩小两颊和下颌替换范围，
+并对单张角色母版启用轻量时序稳定，降低唇缘闪烁与整块下巴被替换的观感；动态人物
+视频不会启用前帧融合，以免转头时拖影。可通过 `.env` 中的 `MUSETALK_EXTRA_MARGIN`、
+`MUSETALK_LEFT_CHEEK_WIDTH`、`MUSETALK_RIGHT_CHEEK_WIDTH`、
+`MUSETALK_UPPER_BOUNDARY_RATIO` 和 `MUSETALK_TEMPORAL_SMOOTHING` 微调。
+
 在媒体模型尚未启用时，流程停在 `planned`，运行记录显示
 `waiting_for_media_runtime`。安装模型和工作流后将 `OMF_MEDIA_GENERATION_ENABLED=true`，
 重启 API，已有任务会继续推进。

@@ -1,0 +1,180 @@
+[
+  {
+    "id": "a1", "type": "arrow", "x": 640, "y": 206, "width": 0, "height": 94,
+    "startElementId": "n-start", "endElementId": "n-draft",
+    "points": [[0, 0], [0, 94]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "自动化触发建任务"
+  },
+  {
+    "id": "a2", "type": "arrow", "x": 640, "y": 396, "width": 0, "height": 124,
+    "startElementId": "n-draft", "endElementId": "n-planned",
+    "points": [[0, 0], [0, 124]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "LLM 内容方案就绪"
+  },
+  {
+    "id": "a3", "type": "arrow", "x": 640, "y": 616, "width": 0, "height": 124,
+    "startElementId": "n-planned", "endElementId": "n-assets",
+    "points": [[0, 0], [0, 124]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "门禁通过 · 角色母版已提交"
+  },
+  {
+    "id": "a4", "type": "arrow", "x": 640, "y": 836, "width": 0, "height": 124,
+    "startElementId": "n-assets", "endElementId": "n-lip",
+    "points": [[0, 0], [0, 124]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "分镜全完成 · 有讲话镜头"
+  },
+  {
+    "id": "a5", "type": "arrow", "x": 640, "y": 1056, "width": 0, "height": 124,
+    "startElementId": "n-lip", "endElementId": "n-compose",
+    "points": [[0, 0], [0, 124]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "口型完成/降级 · RIFE 插帧"
+  },
+  {
+    "id": "a6", "type": "arrow", "x": 640, "y": 1276, "width": 0, "height": 124,
+    "startElementId": "n-compose", "endElementId": "n-generated",
+    "points": [[0, 0], [0, 124]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "提交合成任务后轮询"
+  },
+  {
+    "id": "a7", "type": "arrow", "x": 640, "y": 1496, "width": 0, "height": 124,
+    "startElementId": "n-generated", "endElementId": "n-approved",
+    "points": [[0, 0], [0, 124]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "审核通过"
+  },
+  {
+    "id": "a8", "type": "arrow", "x": 640, "y": 1716, "width": 0, "height": 124,
+    "startElementId": "n-approved", "endElementId": "n-published",
+    "points": [[0, 0], [0, 124]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "全部平台成功"
+  },
+  {
+    "id": "a-bypass", "type": "arrow", "x": 830, "y": 770, "width": 130, "height": 458,
+    "startElementId": "n-assets", "endElementId": "n-compose",
+    "points": [[0, 0], [130, 0], [130, 458], [0, 458]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "dashed", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": true,
+    "text": "无讲话镜头：直接合成"
+  },
+  {
+    "id": "a-cancel", "type": "arrow", "x": 830, "y": 564, "width": 250, "height": 4,
+    "startElementId": "n-planned", "endElementId": "n-cancel",
+    "points": [[0, 4], [250, 0]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "dashed", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "用户终止（任意非终态）"
+  },
+  {
+    "id": "a-reject", "type": "arrow", "x": 830, "y": 1444, "width": 250, "height": 4,
+    "startElementId": "n-generated", "endElementId": "n-rejected",
+    "points": [[0, 4], [250, 0]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "审核未通过"
+  },
+  {
+    "id": "a-partial", "type": "arrow", "x": 830, "y": 1664, "width": 250, "height": 4,
+    "startElementId": "n-approved", "endElementId": "n-partial",
+    "points": [[0, 4], [250, 0]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "部分平台失败"
+  },
+  {
+    "id": "a-pw1", "type": "arrow", "x": 380, "y": 560, "width": 70, "height": 90,
+    "startElementId": "n-planned", "endElementId": "n-wait",
+    "points": [[70, 0], [0, 90]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "dashed", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false
+  },
+  {
+    "id": "a-pw2", "type": "arrow", "x": 380, "y": 690, "width": 70, "height": 60,
+    "startElementId": "n-assets", "endElementId": "n-wait",
+    "points": [[70, 60], [0, 0]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "dashed", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "运行时不可达"
+  },
+  {
+    "id": "a-pw3", "type": "arrow", "x": 380, "y": 730, "width": 70, "height": 250,
+    "startElementId": "n-lip", "endElementId": "n-wait",
+    "points": [[70, 250], [0, 0]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "dashed", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false
+  },
+  {
+    "id": "a-wresume", "type": "arrow", "x": 380, "y": 720, "width": 70, "height": 100,
+    "startElementId": "n-wait", "endElementId": "n-assets",
+    "points": [[0, 0], [70, 100]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "dashed", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "恢复自动续跑"
+  },
+  {
+    "id": "a-lr", "type": "arrow", "x": 380, "y": 1020, "width": 70, "height": 250,
+    "startElementId": "n-lip", "endElementId": "n-retry",
+    "points": [[70, 0], [0, 250]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "dashed", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "异常"
+  },
+  {
+    "id": "a-gr", "type": "arrow", "x": 380, "y": 1340, "width": 70, "height": 90,
+    "startElementId": "n-generated", "endElementId": "n-retry",
+    "points": [[70, 90], [0, 0]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "dashed", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "异常"
+  },
+  {
+    "id": "a-rback", "type": "arrow", "x": 0, "y": 568, "width": 450, "height": 712,
+    "startElementId": "n-retry", "endElementId": "n-planned",
+    "points": [[40, 712], [0, 712], [0, 0], [450, 0]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "dashed", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": true,
+    "text": "重入失败阶段（< max_attempts）"
+  },
+  {
+    "id": "a-rfail", "type": "arrow", "x": 210, "y": 1360, "width": 0, "height": 120,
+    "startElementId": "n-retry", "endElementId": "n-failed",
+    "points": [[0, 0], [0, 120]],
+    "strokeColor": "#737373", "backgroundColor": "transparent",
+    "strokeWidth": 1, "strokeStyle": "dashed", "roughness": 0, "opacity": 100,
+    "startArrowhead": null, "endArrowhead": "triangle", "roundness": null, "elbowed": false,
+    "text": "达到 max_attempts"
+  }
+]

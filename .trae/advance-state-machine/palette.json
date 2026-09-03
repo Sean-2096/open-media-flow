@@ -1,0 +1,24 @@
+{
+  "id": "task-statemachine-status",
+  "brand": {
+    "name": "Scene-derived state machine status palette",
+    "checkedAt": "2026-09-03",
+    "sources": [
+      {
+        "kind": "scene-derived",
+        "reference": "open-media-flow AutomationEngine._advance task state machine; soft success/danger/warning/neutral fills for real terminal states only"
+      }
+    ]
+  },
+  "palette": {
+    "primary": "#654ACB",
+    "series": ["#22A5F7", "#1DC981", "#F87454", "#EDAA45"],
+    "other": "#859EAD",
+    "semantic": {
+      "success": { "fill": "#E7F6EC", "stroke": "#1DC981" },
+      "danger": { "fill": "#FDECEA", "stroke": "#F87454" },
+      "warning": { "fill": "#FDF3E3", "stroke": "#EDAA45" },
+      "neutral": { "fill": "#F0F1F2", "stroke": "#859EAD" }
+    }
+  }
+}
