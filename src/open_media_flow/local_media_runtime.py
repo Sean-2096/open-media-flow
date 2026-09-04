@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -31,6 +32,9 @@ interpolation_root = Path(
 ).expanduser().resolve()
 lip_sync_root = Path(
     os.getenv("OMF_NATIVE_LIP_SYNC_DIR", str(media_root / "generated/lip-sync"))
+).expanduser().resolve()
+comic_root = Path(
+    os.getenv("OMF_NATIVE_COMIC_DIR", str(media_root / "generated/comic-motion"))
 ).expanduser().resolve()
 musetalk_base_url = os.getenv(
     "OMF_MUSETALK_BASE_URL", "http://127.0.0.1:8091"
@@ -65,6 +69,7 @@ rife_weights_dir = Path(
 audio_root.mkdir(parents=True, exist_ok=True)
 interpolation_root.mkdir(parents=True, exist_ok=True)
 lip_sync_root.mkdir(parents=True, exist_ok=True)
+comic_root.mkdir(parents=True, exist_ok=True)
 _tts_model = None
 _tts_lock = threading.Lock()
 _lip_sync_lock = threading.Lock()
@@ -96,6 +101,17 @@ class LipSyncRequest(BaseModel):
     video_path: str = Field(min_length=3, max_length=1_000)
     audio_path: str = Field(min_length=3, max_length=1_000)
     mode: str = Field(default="auto", pattern="^(auto|fast|quality)$")
+
+
+class ComicShotRequest(BaseModel):
+    task_id: str = Field(min_length=8, max_length=64)
+    shot_id: str = Field(min_length=1, max_length=64)
+    image_path: str = Field(min_length=3, max_length=1_000)
+    duration_seconds: int = Field(default=5, ge=2, le=15)
+    motion: str = Field(
+        default="hold",
+        pattern="^(hold|push_in|pull_out|pan_left|pan_right)$",
+    )
 
 
 def require_key(x_api_key: str = Header(default="")) -> None:
@@ -138,6 +154,16 @@ def _rife_ready() -> bool:
         and rife_weights_dir.is_dir()
         and (rife_weights_dir / "model.safetensors").is_file()
     )
+
+
+def _ffmpeg_executable() -> str | None:
+    configured = os.getenv("OMF_FFMPEG_EXECUTABLE", "").strip()
+    if configured and Path(configured).is_file():
+        return configured
+    homebrew = Path("/opt/homebrew/bin/ffmpeg")
+    if homebrew.is_file():
+        return str(homebrew)
+    return shutil.which("ffmpeg")
 
 
 def _musetalk_ready() -> bool:
@@ -192,6 +218,97 @@ def health(x_api_key: str = Header(default="")) -> dict[str, object]:
         "lip_sync_modes": ["auto", "fast", "quality"],
         "frame_interpolation": "rife-mlx",
         "frame_interpolation_ready": frame_ready,
+        "comic_renderer": "comic-motion-ffmpeg",
+        "comic_renderer_ready": _ffmpeg_executable() is not None,
+    }
+
+
+def _comic_motion_filter(motion: str, duration_seconds: int) -> str:
+    frames = duration_seconds * 48
+    base = "scale=1200:2134:force_original_aspect_ratio=increase,crop=1200:2134"
+    centered_x = "iw/2-(iw/zoom/2)"
+    centered_y = "ih/2-(ih/zoom/2)"
+    if motion == "hold":
+        return f"{base},scale=1080:1920,fps=48"
+    if motion == "push_in":
+        zoom = "min(zoom+0.00045,1.08)"
+        x = centered_x
+    elif motion == "pull_out":
+        zoom = "if(eq(on,0),1.08,max(1.0,zoom-0.00045))"
+        x = centered_x
+    elif motion == "pan_left":
+        zoom = "1.08"
+        x = f"(iw-iw/zoom)*(1-on/{max(1, frames - 1)})"
+    else:
+        zoom = "1.08"
+        x = f"(iw-iw/zoom)*on/{max(1, frames - 1)}"
+    return (
+        f"{base},zoompan=z='{zoom}':x='{x}':y='{centered_y}':"
+        f"d=1:s=1080x1920:fps=48"
+    )
+
+
+@app.post("/v1/video/comic-shot")
+def render_comic_shot(
+    body: ComicShotRequest,
+    x_api_key: str = Header(default=""),
+) -> dict[str, object]:
+    require_key(x_api_key)
+    _safe_id(body.task_id, "task id")
+    _safe_id(body.shot_id, "shot id")
+    ffmpeg = _ffmpeg_executable()
+    if not ffmpeg:
+        raise HTTPException(status_code=503, detail="FFmpeg comic renderer is not ready")
+    source = _resolve_source(body.image_path)
+    task_dir = (comic_root / body.task_id).resolve()
+    task_dir.mkdir(parents=True, exist_ok=True)
+    output = task_dir / f"{body.shot_id}-{body.motion}.mp4"
+    try:
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-loglevel",
+                "error",
+                "-loop",
+                "1",
+                "-i",
+                str(source),
+                "-vf",
+                _comic_motion_filter(body.motion, body.duration_seconds),
+                "-t",
+                str(body.duration_seconds),
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "17",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(output),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=300,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        output.unlink(missing_ok=True)
+        detail = getattr(exc, "stderr", b"")
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", errors="replace")
+        raise HTTPException(
+            status_code=500,
+            detail=f"comic shot rendering failed: {str(detail or exc)[-500:]}",
+        ) from exc
+    return {
+        "relative_path": _relative_media_path(output),
+        "provider": "comic-motion-ffmpeg",
+        "fps": 48,
+        "motion": body.motion,
     }
 
 
@@ -263,7 +380,7 @@ def _run_lip_sync_job(
             sync_score=sync_score,
             face_coverage=face_coverage,
         )
-    except Exception as exc:  # background jobs must persist their terminal error
+    except Exception as exc:  # noqa: BLE001 - background jobs must persist terminal errors
         output.unlink(missing_ok=True)
         detail = str(exc)
         if isinstance(exc, urllib.error.HTTPError):

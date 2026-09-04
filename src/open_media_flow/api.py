@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .audit import ContentAuditor
-from .llm import FallbackLLMRouter, LLMError, OpenAICompatibleClient
 from .lip_sync import LocalLipSyncClient
+from .llm import FallbackLLMRouter, LLMError, OpenAICompatibleClient
 from .media import UnsafeMediaPathError, resolve_media_path
 from .media_providers import ComfyUIProvider
 from .models import (
@@ -92,6 +92,7 @@ media_provider = ComfyUIProvider(
     settings.comfyui_image_workflow,
     settings.comfyui_video_workflow,
     video_i2v_workflow=settings.comfyui_video_i2v_workflow,
+    comic_image_workflow=settings.comfyui_comic_image_workflow,
 )
 tts = LocalTTSClient(
     settings.local_media_runtime_base_url,
@@ -121,6 +122,7 @@ if settings.scheduler_enabled:
         tick_seconds=settings.scheduler_tick_seconds,
         max_attempts=settings.automation_max_attempts,
         media_generation_enabled=settings.media_generation_enabled,
+        comic_generation_enabled=settings.comic_generation_enabled,
         lip_sync_enabled=settings.lip_sync_enabled,
         lip_sync_fallback_to_narration=settings.lip_sync_fallback_to_narration,
         lip_sync_min_score=settings.lip_sync_min_score,
@@ -335,6 +337,7 @@ def health() -> dict:
         "scheduler_running": bool(automation_engine and automation_engine.running),
         "store_backend": settings.store_backend,
         "media_generation_enabled": settings.media_generation_enabled,
+        "comic_generation_enabled": settings.comic_generation_enabled,
         "media_video_provider": settings.media_video_provider,
         "lip_sync_enabled": settings.lip_sync_enabled,
         "lip_sync_fallback_to_narration": settings.lip_sync_fallback_to_narration,
@@ -351,6 +354,7 @@ def media_runtime() -> dict[str, object]:
         "provider": media_provider.name,
         "base_url": settings.comfyui_base_url,
         "image_workflow_configured": settings.comfyui_image_workflow.is_file(),
+        "comic_image_workflow_configured": settings.comfyui_comic_image_workflow.is_file(),
         "video_workflow_configured": settings.comfyui_video_workflow.is_file(),
         "video_i2v_workflow_configured": settings.comfyui_video_i2v_workflow.is_file(),
         "image_available": media_provider.available(AssetKind.IMAGE),
@@ -627,6 +631,20 @@ def preview_task_shot(task_id: str, shot_id: str) -> FileResponse:
     if shot is None:
         raise HTTPException(status_code=404, detail="shot not found")
     return media_file_response(shot.media_path, "shot media")
+
+
+@app.get(
+    "/tasks/{task_id}/shots/{shot_id}/keyframe",
+    response_class=FileResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def preview_task_shot_keyframe(task_id: str, shot_id: str) -> FileResponse:
+    task = get_task(task_id)
+    shots = task.content_plan.shots if task.content_plan else []
+    shot = next((item for item in shots if item.id == shot_id), None)
+    if shot is None:
+        raise HTTPException(status_code=404, detail="shot not found")
+    return media_file_response(shot.keyframe_path, "shot keyframe")
 
 
 @app.post(

@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
-from .models import ContentPlan, ContentTask, ShotSpec
+from .models import CharacterSpec, ContentPlan, ContentTask, ShotSpec
 from .settings import LLMEndpointSettings
 
 
@@ -48,6 +48,9 @@ class GeneratedContentPackage(GeneratedMetadata):
     creative_direction: str = Field(min_length=5, max_length=1_000)
     cover_prompt: str = Field(min_length=10, max_length=2_000)
     character_reference_prompt: str = Field(min_length=10, max_length=2_000)
+    story_summary: str = Field(default="", max_length=2_000)
+    episode_goal: str = Field(default="", max_length=500)
+    characters: list[CharacterSpec] = Field(default_factory=list, max_length=4)
     shots: list[ShotSpec] = Field(min_length=3, max_length=12)
 
 
@@ -105,6 +108,8 @@ def _metadata_prompt(task: ContentTask) -> tuple[str, str]:
 
 
 def _content_plan_prompt(task: ContentTask) -> tuple[str, str]:
+    if task.content_type.value == "ai_comic":
+        return _comic_content_plan_prompt(task)
     mode_rules = {
         "narration": "所有分镜 presentation_mode 都必须是 narration，人物不得出现可见对白。",
         "mixed": (
@@ -201,6 +206,55 @@ character_reference_prompt 必填；所有分镜保持同一角色身份与画�
     return system, user
 
 
+def _comic_content_plan_prompt(task: ContentTask) -> tuple[str, str]:
+    system = (
+        "你是竖屏AI动态漫剧的编剧、分镜导演和角色设定师。只输出JSON，不要输出Markdown。"
+        "先建立最多两个原创主要角色，再把一集完整剧情拆成6到10个可独立绘制的关键帧。"
+        "故事必须有明确冲突、情绪递进和结尾悬念；对白应口语化，禁止写成知识解说或旁白稿。"
+        "每个镜头只允许一个主要动作，必须记录场景、出场角色、说话人、情绪、景别、运镜和连续性。"
+        "所有绘图提示词必须是英文逗号分隔标签，不写自然语言句子；逐镜头重复角色的固定脸型、发型、"
+        "服装、配色和二维动画风格，并按人物、外观、服装、动作、构图、场景、光线的顺序组织。"
+        "画面不得绘制字幕、气泡、Logo和水印；台词与字幕由后续渲染器添加。"
+        "为了避免人物变形，所有shots.kind固定为image，presentation_mode固定为narration。"
+        "camera_motion只能是hold、push_in、pull_out、pan_left或pan_right。"
+        "不得使用现有影视、动漫、游戏角色或受版权保护的世界观。"
+    )
+    user = f"""
+创作主题：{task.topic}
+目标平台：{", ".join(platform.value for platform in task.platforms)}
+
+制作规格：
+1. 竖屏9:16动态漫剧，目标时长45到75秒。
+2. 最多两个主要角色，一个主要场景，6到10个镜头。
+3. 前3秒直接出现冲突；中段至少一次信息反转；结尾留下下一集悬念。
+4. script按镜头顺序汇总全部对白和必要旁白，总长度120到450个中文字符。
+5. description结尾必须是“本内容包含AI辅助生成素材”。
+
+JSON字段：
+- title、script、description、tags、audience、hook、creative_direction
+- story_summary：本集起因、冲突、反转和悬念
+- episode_goal：本集希望观众获得的核心情绪
+- cover_prompt：英文竖屏动漫封面提示词，不含文字
+- character_reference_prompt：英文双角色设定集提示词，包含正面、侧面、半身、闭口和表情参考
+- characters：1到2项，每项包含id、name、role、personality、appearance_prompt、outfit_prompt、voice、voice_instruct
+  voice优先从Vivian、Serena、Uncle_Fu、Ryan中选择，不同角色不得使用相同voice
+- shots：6到10项，每项必须包含：
+  order、narration、visual_prompt、negative_prompt、duration_seconds、kind、presentation_mode、
+  scene_id、characters、speaker、dialogue、emotion、action、shot_type、camera_motion、continuity
+
+分镜约束：
+- narration填写这一镜头用于音轨的文本；有角色说话时必须与dialogue相同，无对白时可写一句短旁白。
+- visual_prompt必须使用英文逗号分隔标签，明确人数、二维动漫/国漫插画风格、人物固定特征、服装、构图、表情、动作、场景和光线；禁止使用完整英文句子。
+- negative_prompt必须包含photorealistic、3d render、text、logo、watermark、extra fingers、deformed face。
+- duration_seconds为3到8的整数；kind固定为image；presentation_mode固定为narration。
+- continuity至少记录outfit、location和screen_direction。
+- 相邻镜头避免连续使用相同景别和相同运镜。
+
+只返回一个完整JSON对象。
+""".strip()
+    return system, user
+
+
 def _validation_feedback(error: ValidationError) -> str:
     issues: list[str] = []
     for item in error.errors(include_url=False, include_input=False)[:6]:
@@ -213,6 +267,8 @@ def _content_plan_repair_prompt(
     task: ContentTask,
     failure: ContentPackageValidationError,
 ) -> tuple[str, str]:
+    if task.content_type.value == "ai_comic":
+        return _comic_content_plan_repair_prompt(task, failure)
     system = (
         "你是 JSON 内容包修复器。根据校验反馈修正已有内容包，"
         "只返回修正后的完整 JSON 对象，不要解释，不要输出 Markdown。"
@@ -241,6 +297,34 @@ def _content_plan_repair_prompt(
 4. 每个分镜必须有 narration、英文 visual_prompt、negative_prompt、整数 duration_seconds、kind="video" 和 presentation_mode。
 5. description 结尾必须保留“本内容包含AI辅助生成素材”。
 6. character_reference_prompt 必须是英文角色母版提示词；所有分镜重复稳定身份特征，并禁止可见说话和口型动作。
+""".strip()
+    return system, user
+
+
+def _comic_content_plan_repair_prompt(
+    task: ContentTask,
+    failure: ContentPackageValidationError,
+) -> tuple[str, str]:
+    invalid_json = json.dumps(
+        failure.invalid_package,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )[:20_000]
+    system = (
+        "你是AI动态漫剧JSON修复器。只返回修正后的完整JSON对象，不要解释。"
+        "保留原有剧情、角色身份和镜头顺序，补齐缺失字段并满足校验约束。"
+    )
+    user = f"""
+主题：{task.topic}
+校验反馈：{failure.feedback}
+
+待修复JSON：
+{invalid_json}
+
+硬性规则：characters为1到2项；shots为6到10项；order连续；script为120到450个中文字符；
+每个分镜必须包含scene_id、characters、speaker、dialogue、emotion、action、shot_type、camera_motion和continuity；
+kind固定为image，presentation_mode固定为narration；camera_motion只能使用hold、push_in、pull_out、pan_left、pan_right；
+description结尾保留“本内容包含AI辅助生成素材”。
 """.strip()
     return system, user
 
@@ -322,6 +406,9 @@ class OpenAICompatibleClient:
             creative_direction=package.creative_direction,
             cover_prompt=package.cover_prompt,
             character_reference_prompt=package.character_reference_prompt,
+            story_summary=package.story_summary,
+            episode_goal=package.episode_goal,
+            characters=package.characters,
             shots=package.shots,
         )
         return LLMGeneration(
@@ -455,6 +542,15 @@ class FallbackLLMRouter:
             except ContentPackageValidationError as exc:
                 validation_failure = exc
                 errors.append(str(exc))
+            except LLMError as exc:
+                errors.append(str(exc))
+        # A malformed package returned by the final normal attempt used to fail
+        # immediately. Always allow one dedicated model-assisted repair before
+        # falling back or marking the automation as failed.
+        repair = getattr(self.primary, "repair_content_plan", None)
+        if validation_failure is not None and callable(repair):
+            try:
+                return repair(task, validation_failure)
             except LLMError as exc:
                 errors.append(str(exc))
         if self.fallback is not None:

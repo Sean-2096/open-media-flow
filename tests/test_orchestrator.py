@@ -6,6 +6,7 @@ from open_media_flow.models import (
     AutomationCreate,
     AutomationRun,
     ContentTask,
+    ContentType,
     Platform,
     TaskStatus,
 )
@@ -79,6 +80,17 @@ def test_manual_automation_run_creates_tracked_task():
 
     with pytest.raises(AutomationAlreadyRunningError):
         engine.create_task_from_automation(store.automation.id)
+
+
+def test_ai_comic_automation_preserves_content_type_on_task():
+    store = MemoryAutomationStore()
+    store.automation.content_type = ContentType.AI_COMIC
+    engine = AutomationEngine.__new__(AutomationEngine)
+    engine.store = store
+
+    run = engine.create_task_from_automation(store.automation.id)
+
+    assert store.tasks[run.task_id].content_type == ContentType.AI_COMIC
 
 
 def test_delete_automation_removes_schedule_and_record():
@@ -311,6 +323,92 @@ def test_character_reference_is_generated_before_i2v_shots(tmp_path):
     assert task.content_plan.shots[0].lip_sync_source_path == str(
         tmp_path / "character.png"
     )
+
+
+def test_ai_comic_uses_comic_workflow_and_stable_seed(tmp_path):
+    from open_media_flow.media_providers import MediaJob, MediaJobStatus
+    from open_media_flow.models import ContentPlan
+
+    class ComicProvider:
+        def __init__(self):
+            self.requests = []
+
+        def available(self, _kind):
+            return True
+
+        def submit(self, request):
+            self.requests.append(request)
+            return MediaJob(id="comic-reference-job", provider="comfyui")
+
+        def poll(self, _job_id, _kind):
+            return MediaJobStatus(state="processing")
+
+    class ComicRuntime:
+        def available(self):
+            return True
+
+        def comic_renderer_available(self):
+            return True
+
+        def synthesize(self, _task_id, _script):
+            audio = tmp_path / "comic.wav"
+            audio.write_bytes(b"audio")
+            return audio
+
+    store = MemoryAutomationStore()
+    task = ContentTask(
+        topic="都市异能漫剧",
+        platforms=[Platform.DOUYIN],
+        content_type=ContentType.AI_COMIC,
+        script="少年在地铁站发现自己的影子会提前行动，由此卷入一场追逐。",
+        status=TaskStatus.PLANNED,
+        content_plan=ContentPlan(
+            audience="漫剧观众",
+            hook="影子突然先动了",
+            creative_direction="二维都市悬疑动漫",
+            cover_prompt="two original anime characters, subway platform",
+            character_reference_prompt="anime character turnaround sheet",
+            characters=[
+                {
+                    "id": "hero",
+                    "name": "林夜",
+                    "appearance_prompt": "young man, short black hair, amber eyes",
+                    "outfit_prompt": "navy hoodie, silver pendant",
+                }
+            ],
+            shots=[
+                {
+                    "order": index,
+                    "narration": "影子先动了。",
+                    "visual_prompt": "1boy, subway platform, tense expression",
+                    "characters": ["hero"],
+                    "kind": "image",
+                }
+                for index in range(1, 7)
+            ],
+        ),
+    )
+    store.create(task)
+    provider = ComicProvider()
+    engine = AutomationEngine.__new__(AutomationEngine)
+    engine.store = store
+    engine.media_generation_enabled = True
+    engine.comic_generation_enabled = True
+    engine.max_attempts = 3
+    engine.media_provider = provider
+    engine.tts = ComicRuntime()
+
+    engine._advance(task)
+
+    assert task.status == TaskStatus.ASSETS_GENERATING
+    assert len(provider.requests) == 1
+    request = provider.requests[0]
+    assert request.workflow_variant == "comic"
+    assert request.width == 576
+    assert request.height == 1024
+    assert request.seed >= 0
+    assert "林夜" in request.prompt
+    assert "navy hoodie" in request.prompt
 
 
 def test_history_timeout_waits_and_clears_misclassified_attempts():

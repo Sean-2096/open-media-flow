@@ -11,8 +11,9 @@ from open_media_flow.llm import (
     LLMReviewGeneration,
     OpenAICompatibleClient,
     ReviewVerdict,
+    _content_plan_prompt,
 )
-from open_media_flow.models import ContentTask, Platform
+from open_media_flow.models import ContentTask, ContentType, Platform
 from open_media_flow.settings import LLMEndpointSettings
 
 
@@ -117,6 +118,23 @@ def content_package():
             for index in range(1, 5)
         ],
     }
+
+
+def test_ai_comic_prompt_requires_character_dialogue_and_keyframes():
+    comic_task = ContentTask(
+        topic="原创都市异能双人漫剧",
+        platforms=[Platform.BILIBILI],
+        content_type=ContentType.AI_COMIC,
+    )
+
+    system, user = _content_plan_prompt(comic_task)
+
+    assert "动态漫剧" in system
+    assert "角色" in system
+    assert "kind固定为image" in system
+    assert "dialogue" in user
+    assert "continuity" in user
+    assert "6到10" in user
 
 
 def test_primary_retries_before_fallback():
@@ -325,3 +343,31 @@ def test_content_plan_retry_repairs_invalid_package(monkeypatch):
     assert "校验反馈" in repair_prompt
     assert "字段 script" in repair_prompt
     assert "字段 shots" in repair_prompt
+
+
+def test_content_plan_repairs_validation_failure_on_last_primary_attempt(monkeypatch):
+    captured_bodies = []
+    invalid = {**content_package(), "shots": []}
+    responses = [invalid, content_package()]
+
+    def fake_urlopen(request, timeout):
+        captured_bodies.append(json.loads(request.data.decode("utf-8")))
+        content = json.dumps(responses[len(captured_bodies) - 1], ensure_ascii=False)
+        return FakeResponse({"choices": [{"message": {"content": content}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = OpenAICompatibleClient(
+        LLMEndpointSettings(
+            name="primary",
+            base_url="http://127.0.0.1:8081/v1",
+            model="local",
+            api_key="local",
+        )
+    )
+    router = FallbackLLMRouter(client, primary_attempts=1)
+
+    result = router.generate_content_plan(task())
+
+    assert result.plan is not None
+    assert len(captured_bodies) == 2
+    assert "字段 shots" in captured_bodies[1]["messages"][1]["content"]

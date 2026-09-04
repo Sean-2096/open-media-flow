@@ -54,11 +54,13 @@ class Settings:
     automation_max_attempts: int
     scheduler_timezone: str
     media_generation_enabled: bool
+    comic_generation_enabled: bool
     media_video_provider: str
     media_image_provider: str
     comfyui_base_url: str
     comfyui_output_dir: Path
     comfyui_image_workflow: Path
+    comfyui_comic_image_workflow: Path
     comfyui_video_workflow: Path
     comfyui_video_i2v_workflow: Path
     local_media_runtime_base_url: str
@@ -144,6 +146,9 @@ class Settings:
             media_generation_enabled=_as_bool(
                 os.getenv("OMF_MEDIA_GENERATION_ENABLED", "false")
             ),
+            comic_generation_enabled=_as_bool(
+                os.getenv("OMF_COMIC_GENERATION_ENABLED", "false")
+            ),
             media_video_provider=os.getenv(
                 "OMF_MEDIA_VIDEO_PROVIDER", "comfyui"
             ).strip(),
@@ -161,6 +166,12 @@ class Settings:
             comfyui_image_workflow=Path(
                 os.getenv(
                     "COMFYUI_IMAGE_WORKFLOW", "/app/config/workflows/image.json"
+                )
+            ).expanduser().resolve(),
+            comfyui_comic_image_workflow=Path(
+                os.getenv(
+                    "COMFYUI_COMIC_IMAGE_WORKFLOW",
+                    "/app/config/workflows/comic_image.json",
                 )
             ).expanduser().resolve(),
             comfyui_video_workflow=Path(

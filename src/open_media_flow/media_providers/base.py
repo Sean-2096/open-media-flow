@@ -27,6 +27,7 @@ class GenerationRequest:
     height: int = 896
     seed: int = -1
     reference_image_path: str | None = None
+    workflow_variant: str | None = None
 
 
 @dataclass(frozen=True)

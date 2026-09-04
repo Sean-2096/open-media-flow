@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import UTC, datetime
 
@@ -7,8 +8,8 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
 from redis import Redis
 
+from .lip_sync import LipSyncRuntimeUnavailableError, LocalLipSyncClient
 from .llm import FallbackLLMRouter
-from .lip_sync import LocalLipSyncClient, LipSyncRuntimeUnavailableError
 from .media_providers import (
     ComfyUIProvider,
     GenerationRequest,
@@ -69,6 +70,7 @@ class AutomationEngine:
         tick_seconds: int,
         max_attempts: int,
         media_generation_enabled: bool,
+        comic_generation_enabled: bool,
         lip_sync_enabled: bool,
         lip_sync_fallback_to_narration: bool,
         lip_sync_min_score: float,
@@ -86,6 +88,7 @@ class AutomationEngine:
         self.tick_seconds = tick_seconds
         self.max_attempts = max_attempts
         self.media_generation_enabled = media_generation_enabled
+        self.comic_generation_enabled = comic_generation_enabled
         self.lip_sync_enabled = lip_sync_enabled
         self.lip_sync_fallback_to_narration = lip_sync_fallback_to_narration
         self.lip_sync_min_score = lip_sync_min_score
@@ -189,6 +192,7 @@ class AutomationEngine:
             topic=automation.topic,
             platforms=automation.platforms,
             video_materials=automation.video_materials,
+            content_type=automation.content_type,
             presentation_mode=automation.presentation_mode,
             lip_sync_mode=automation.lip_sync_mode,
             automation_id=automation.id,
@@ -259,7 +263,20 @@ class AutomationEngine:
                     return
                 if task.content_plan is None:
                     raise ValueError("content plan is missing")
-                if not self.media_provider.available(AssetKind.VIDEO):
+                is_comic = task.content_type.value == "ai_comic"
+                comic_seed = (
+                    int(hashlib.sha256(task.id.encode()).hexdigest()[:8], 16)
+                    if is_comic
+                    else -1
+                )
+                if is_comic and not self.comic_generation_enabled:
+                    self._wait_for_runtime(
+                        task,
+                        "comic_generation",
+                        "AI漫剧剧本与分镜已生成，等待安装并启用动漫关键帧模型",
+                    )
+                    return
+                if not is_comic and not self.media_provider.available(AssetKind.VIDEO):
                     self._wait_for_runtime(
                         task,
                         "video",
@@ -271,6 +288,13 @@ class AutomationEngine:
                         task,
                         "image",
                         "生成引擎未运行；执行 ./scripts/omf start 后，任务会自动继续",
+                    )
+                    return
+                if is_comic and not self.tts.comic_renderer_available():
+                    self._wait_for_runtime(
+                        task,
+                        "comic_renderer",
+                        "漫剧分镜已规划，等待本地二维镜头渲染器恢复",
                     )
                     return
                 if not task.audio_path:
@@ -292,7 +316,18 @@ class AutomationEngine:
                         shot.presentation_mode == ShotPresentationMode.TALKING_HEAD
                         for shot in task.content_plan.shots
                     )
-                    if has_talking_head:
+                    if is_comic:
+                        character_identity = ", ".join(
+                            f"{character.name}, {character.appearance_prompt}, {character.outfit_prompt}"
+                            for character in task.content_plan.characters
+                        )
+                        reference_prompt = (
+                            f"{character_identity}, {reference_prompt}, "
+                            "clean Chinese animation character design sheet, "
+                            "consistent 2D line art, flat color palette, front and side views, "
+                            "expression references, full body and waist-up poses, plain background"
+                        )
+                    elif has_talking_head:
                         reference_prompt = (
                             f"{reference_prompt}, photorealistic adult human presenter, "
                             "front-facing waist-up portrait composition, upper torso visible, hands "
@@ -308,6 +343,11 @@ class AutomationEngine:
                             kind=AssetKind.IMAGE,
                             prompt=reference_prompt,
                             negative_prompt=(
+                                "photorealistic, 3d render, realistic skin, inconsistent character, "
+                                "different outfit, text, logo, watermark, extra limbs, extra fingers, "
+                                "deformed face, cropped character"
+                                if is_comic
+                                else
                                 "(octane render, drawing, anime, bad photo, bad photography:1.3), "
                                 "(worst quality, low quality, blurry:1.2), bad teeth, deformed teeth, "
                                 "deformed lips, bad anatomy, bad proportions, deformed eyes, "
@@ -317,8 +357,10 @@ class AutomationEngine:
                                 if has_talking_head
                                 else ""
                             ),
-                            width=768 if has_talking_head else 512,
-                            height=1024 if has_talking_head else 896,
+                            width=576 if is_comic else 768 if has_talking_head else 512,
+                            height=1024 if has_talking_head or is_comic else 896,
+                            seed=comic_seed,
+                            workflow_variant="comic" if is_comic else None,
                         )
                     )
                     task.metadata["character_generation_job_id"] = character_job.id
@@ -337,7 +379,11 @@ class AutomationEngine:
                     task,
                     "素材",
                     task.status,
-                    "已提交角色母版；完成后将基于同一角色生成全部视频分镜",
+                    (
+                        "已提交漫剧角色设定集；完成后将生成稳定关键帧与二维运镜"
+                        if is_comic
+                        else "已提交角色母版；完成后将基于同一角色生成全部视频分镜"
+                    ),
                 )
                 self.store.save(task)
                 self._set_run_status(task, "running", "本地媒体素材生成中")
@@ -345,7 +391,13 @@ class AutomationEngine:
             if task.status == TaskStatus.ASSETS_GENERATING:
                 if task.content_plan is None:
                     raise ValueError("content plan is missing")
-                if not self.media_provider.available(AssetKind.VIDEO):
+                is_comic = task.content_type.value == "ai_comic"
+                comic_seed = (
+                    int(hashlib.sha256(task.id.encode()).hexdigest()[:8], 16)
+                    if is_comic
+                    else -1
+                )
+                if not is_comic and not self.media_provider.available(AssetKind.VIDEO):
                     self._wait_for_runtime(
                         task, "video", "视频生成运行时忙碌或暂不可达，任务将自动续跑"
                     )
@@ -353,6 +405,13 @@ class AutomationEngine:
                 if not self.media_provider.available(AssetKind.IMAGE):
                     self._wait_for_runtime(
                         task, "image", "图像生成运行时忙碌或暂不可达，任务将自动续跑"
+                    )
+                    return
+                if is_comic and not self.tts.comic_renderer_available():
+                    self._wait_for_runtime(
+                        task,
+                        "comic_renderer",
+                        "关键帧生成就绪，等待本地二维镜头渲染器恢复",
                     )
                     return
                 self._mark_runtime_recovered(task)
@@ -387,7 +446,11 @@ class AutomationEngine:
                         task,
                         "角色一致性",
                         task.status,
-                        "角色母版已生成；讲话分镜将使用稳定闭口正脸作为口型底片",
+                        (
+                            "漫剧角色设定集已生成；后续分镜将复用固定外观和画风描述"
+                            if is_comic
+                            else "角色母版已生成；讲话分镜将使用稳定闭口正脸作为口型底片"
+                        ),
                     )
                     self.store.save(task)
 
@@ -401,15 +464,33 @@ class AutomationEngine:
                     if shot.status != AssetStatus.PENDING:
                         continue
                     shot.error = None
+                    shot_prompt = shot.visual_prompt
+                    if is_comic:
+                        cast = [
+                            character
+                            for character in task.content_plan.characters
+                            if character.id in shot.characters
+                            or character.name in shot.characters
+                        ]
+                        identity_tags = ", ".join(
+                            f"{character.name}, {character.appearance_prompt}, {character.outfit_prompt}"
+                            for character in cast
+                        )
+                        if identity_tags:
+                            shot_prompt = f"{identity_tags}, {shot_prompt}"
                     job = self.media_provider.submit(
                         GenerationRequest(
                             task_id=task.id,
                             shot_id=shot.id,
-                            kind=AssetKind.VIDEO,
-                            prompt=shot.visual_prompt,
+                            kind=shot.kind,
+                            prompt=shot_prompt,
                             negative_prompt=shot.negative_prompt,
                             duration_seconds=shot.duration_seconds,
+                            width=576 if is_comic else 512,
+                            height=1024 if is_comic else 896,
+                            seed=comic_seed,
                             reference_image_path=character_reference_path or None,
+                            workflow_variant="comic" if is_comic else None,
                         )
                     )
                     shot.provider = job.provider
@@ -418,7 +499,11 @@ class AutomationEngine:
                     submitted_shots += 1
                     self.store.save(task)
                 if submitted_shots:
-                    mode = "角色母版图生视频" if character_reference_path else "文生视频"
+                    mode = (
+                        "漫剧关键帧"
+                        if is_comic
+                        else "角色母版图生视频" if character_reference_path else "文生视频"
+                    )
                     self._record_event(
                         task,
                         "角色一致性",
@@ -429,19 +514,35 @@ class AutomationEngine:
                 for shot in task.content_plan.shots:
                     if shot.status != AssetStatus.QUEUED or not shot.generation_job_id:
                         continue
-                    result = self.media_provider.poll(shot.generation_job_id, AssetKind.VIDEO)
+                    result = self.media_provider.poll(shot.generation_job_id, shot.kind)
                     if result.error or result.state == "failed":
                         shot.status = AssetStatus.FAILED
                         shot.error = result.error or "video generation failed"
                         raise ValueError(f"shot {shot.order} failed: {shot.error}")
                     if result.media_path is not None:
                         shot.status = AssetStatus.COMPLETE
-                        shot.media_path = str(result.media_path)
+                        if is_comic:
+                            shot.keyframe_path = str(result.media_path)
+                            rendered, renderer = self.tts.render_comic_shot(
+                                task.id,
+                                shot.id,
+                                shot.keyframe_path,
+                                duration_seconds=shot.duration_seconds,
+                                motion=shot.camera_motion.value,
+                            )
+                            shot.media_path = str(rendered)
+                            shot.provider = f"{shot.provider}+{renderer}"
+                        else:
+                            shot.media_path = str(result.media_path)
                         self._record_event(
                             task,
                             "素材",
                             task.status,
-                            f"分镜 {shot.order} 已生成",
+                            (
+                                f"漫剧分镜 {shot.order} 关键帧与{shot.camera_motion.value}运镜已生成"
+                                if is_comic
+                                else f"分镜 {shot.order} 已生成"
+                            ),
                         )
                 cover_job_id = str(task.metadata.get("cover_generation_job_id") or "")
                 if cover_job_id and task.metadata.get("cover_status") != "complete":
@@ -769,7 +870,10 @@ class AutomationEngine:
     def _finish_assets(self, task: ContentTask) -> None:
         if task.content_plan is None:
             raise ValueError("content plan is missing")
-        if self.frame_interpolation_enabled:
+        interpolate_shots = (
+            self.frame_interpolation_enabled and task.content_type.value != "ai_comic"
+        )
+        if interpolate_shots:
             if not self.tts.interpolation_available():
                 self._wait_for_runtime(
                     task,
@@ -813,7 +917,7 @@ class AutomationEngine:
         task.status = TaskStatus.COMPOSING
         self._complete_stage(task)
         detail = "全部素材就绪，进入视频合成"
-        if self.frame_interpolation_enabled:
+        if interpolate_shots:
             detail = "全部素材与 AI 插帧已就绪，进入 48 FPS 视频合成"
         self._record_event(task, "合成", task.status, detail)
         self.store.save(task)

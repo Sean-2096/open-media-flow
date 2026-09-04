@@ -109,3 +109,40 @@ def test_quality_mode_does_not_silently_use_musetalk(monkeypatch):
     )
     assert response.status_code == 503
     assert "LatentSync" in response.json()["detail"]
+
+
+def test_comic_shot_renderer_creates_48fps_motion_clip(tmp_path, monkeypatch):
+    image = tmp_path / "generated/comfyui/panel.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"image")
+    monkeypatch.setattr(runtime, "media_root", tmp_path.resolve())
+    monkeypatch.setattr(
+        runtime, "comic_root", (tmp_path / "generated/comic-motion").resolve()
+    )
+    monkeypatch.setattr(runtime, "_ffmpeg_executable", lambda: "/fake/ffmpeg")
+
+    captured = {}
+
+    def fake_run(command, **_kwargs):
+        captured["command"] = command
+        output = runtime.comic_root / "task-1234/shot-1-push_in.mp4"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"video")
+
+    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
+
+    response = TestClient(runtime.app).post(
+        "/v1/video/comic-shot",
+        json={
+            "task_id": "task-1234",
+            "shot_id": "shot-1",
+            "image_path": "generated/comfyui/panel.png",
+            "duration_seconds": 5,
+            "motion": "push_in",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "comic-motion-ffmpeg"
+    assert response.json()["fps"] == 48
+    assert "zoompan" in captured["command"][captured["command"].index("-vf") + 1]

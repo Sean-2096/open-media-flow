@@ -28,6 +28,7 @@ class ComfyUIProvider:
         video_workflow: Path,
         *,
         video_i2v_workflow: Path | None = None,
+        comic_image_workflow: Path | None = None,
         timeout_seconds: int = 30,
     ):
         self.base_url = base_url.rstrip("/")
@@ -37,6 +38,7 @@ class ComfyUIProvider:
             AssetKind.VIDEO: video_workflow,
         }
         self.video_i2v_workflow = video_i2v_workflow
+        self.comic_image_workflow = comic_image_workflow
         self.timeout_seconds = timeout_seconds
 
     def available(self, kind: AssetKind) -> bool:
@@ -56,6 +58,10 @@ class ComfyUIProvider:
 
     def submit(self, request: GenerationRequest) -> MediaJob:
         workflow_path = self.workflows[request.kind]
+        if request.kind == AssetKind.IMAGE and request.workflow_variant == "comic":
+            if self.comic_image_workflow is None:
+                raise MediaGenerationError("comic image workflow is not configured")
+            workflow_path = self.comic_image_workflow
         reference_image = None
         if request.kind == AssetKind.VIDEO and request.reference_image_path:
             if self.video_i2v_workflow is None:

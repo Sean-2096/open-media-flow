@@ -3,7 +3,7 @@
 > Plan, generate, review, and publish everywhere — locally.
 
 OpenMediaFlow 是一个本地优先的全自动内容运营项目，目标平台为抖音、小红书、
-哔哩哔哩和 YouTube。v0.6 已把“内容生成”提升为主链路：系统先生成完整内容包和分镜，
+哔哩哔哩和 YouTube。v0.7 已把“内容生成”提升为主链路：系统先生成完整内容包和分镜，
 再生成封面、视频镜头与旁白，完成合成、审核，最后进入多平台发布门禁。
 
 真实发布仍固定为 `dry-run`，不会改动任何外部账号。平台 OAuth、Cookie 和验证码接管
@@ -114,6 +114,24 @@ cp .env.example .env
 手工输入 API KEY。
 
 ## 自动流程
+
+### AI 动态漫剧 V1
+
+创建计划时可选择 `ai_comic` 内容类型。它不会复用写实口播提示词，而是生成角色设定、
+故事梗概、对白、情绪、景别、运镜和连续性字段；每个分镜固定生成为动漫关键帧，再由
+宿主机媒体运行时渲染为 1080×1920、48 FPS 的稳定二维镜头。这样可以避免视频模型逐帧
+重画角色导致的脸型、服装和肢体漂移，也不会把真人 MuseTalk 嘴部融合到动漫角色上。
+
+漫剧模式使用独立的 `comic_image.json` 工作流和 Animagine XL 4.0 Opt checkpoint，不会替换
+通用短视频使用的写实 RealVisXL。首次安装与目测验证通过前保持
+`OMF_COMIC_GENERATION_ENABLED=false`；角色一致性增强下一阶段再接入 IP-Adapter 和 ControlNet。
+
+漫剧生产链路：
+
+```text
+主题 → 原创角色与本集剧情 → 6–10 个对白分镜 → 动漫关键帧
+     → hold / push / pull / pan 二维运镜 → 48 FPS 镜头 → 配音字幕 → 合成审核
+```
 
 载入本地 API 密钥：
 
@@ -237,12 +255,14 @@ LLM_FALLBACK_API_KEY=<HF_TOKEN>
 Provider 读取：
 
 - `config/workflows/image.json`
+- `config/workflows/comic_image.json`
 - `config/workflows/video.json`
 
 工作流必须以 ComfyUI 的 API Format 导出，并可使用
 `{{PROMPT}}`、`{{NEGATIVE_PROMPT}}`、`{{WIDTH}}`、`{{HEIGHT}}`、
 `{{DURATION_SECONDS}}`、`{{FRAME_COUNT}}`、`{{SEED}}`、
 `{{FILENAME_PREFIX}}` 占位符。详细说明见 `config/workflows/README.md`。
+本地大模型的来源、校验值和许可证记录见 `config/MODELS.md`。
 
 ## 安全边界
 

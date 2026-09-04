@@ -41,6 +41,20 @@ class LocalTTSClient:
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
             return False
 
+    def comic_renderer_available(self) -> bool:
+        request = urllib.request.Request(
+            f"{self.base_url}/health", headers=self._headers()
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=3) as response:
+                result = json.loads(response.read().decode("utf-8"))
+                return (
+                    response.status == 200
+                    and result.get("comic_renderer_ready", False) is True
+                )
+        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+            return False
+
     def synthesize(self, task_id: str, text: str, *, clip_id: str | None = None) -> Path:
         payload = {"task_id": task_id, "text": text}
         if clip_id:
@@ -116,6 +130,57 @@ class LocalTTSClient:
         if not candidate.is_file():
             raise TTSError("frame interpolation output file is missing")
         return candidate, str(result.get("provider") or "rife-mlx")
+
+    def render_comic_shot(
+        self,
+        task_id: str,
+        shot_id: str,
+        image_path: str,
+        *,
+        duration_seconds: int,
+        motion: str,
+    ) -> tuple[Path, str]:
+        source = Path(image_path)
+        request_source = image_path
+        if source.is_absolute():
+            try:
+                request_source = source.resolve().relative_to(self.media_root).as_posix()
+            except ValueError:
+                request_source = image_path
+        request = urllib.request.Request(
+            f"{self.base_url}/v1/video/comic-shot",
+            data=json.dumps(
+                {
+                    "task_id": task_id,
+                    "shot_id": shot_id,
+                    "image_path": request_source,
+                    "duration_seconds": duration_seconds,
+                    "motion": motion,
+                }
+            ).encode("utf-8"),
+            headers=self._headers(json_content=True),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=360) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = json.loads(exc.read().decode("utf-8")).get("detail")
+            except (ValueError, UnicodeDecodeError):
+                detail = None
+            raise TTSError(detail or f"comic renderer returned HTTP {exc.code}") from exc
+        except (OSError, urllib.error.URLError, TimeoutError) as exc:
+            raise TTSError("local comic renderer is unreachable") from exc
+        relative = Path(str(result.get("relative_path") or ""))
+        candidate = (self.media_root / relative).resolve()
+        try:
+            candidate.relative_to(self.media_root)
+        except ValueError as exc:
+            raise TTSError("comic renderer returned an unsafe path") from exc
+        if not candidate.is_file():
+            raise TTSError("comic renderer output file is missing")
+        return candidate, str(result.get("provider") or "comic-motion-ffmpeg")
 
     def _headers(self, *, json_content: bool = False) -> dict[str, str]:
         headers = {"X-API-Key": self.api_key} if self.api_key else {}

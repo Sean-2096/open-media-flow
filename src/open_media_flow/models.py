@@ -19,6 +19,11 @@ class Platform(StrEnum):
     YOUTUBE = "youtube"
 
 
+class ContentType(StrEnum):
+    STANDARD = "standard"
+    AI_COMIC = "ai_comic"
+
+
 class PresentationMode(StrEnum):
     NARRATION = "narration"
     MIXED = "mixed"
@@ -68,6 +73,7 @@ class TaskCreate(BaseModel):
     description: str = Field(default="", max_length=5_000)
     tags: list[str] = Field(default_factory=list, max_length=30)
     video_materials: list[str] = Field(default_factory=list, max_length=100)
+    content_type: ContentType = ContentType.STANDARD
     presentation_mode: PresentationMode = PresentationMode.NARRATION
     lip_sync_mode: LipSyncMode = LipSyncMode.AUTO
     contains_synthetic_media: bool = True
@@ -85,6 +91,25 @@ class AssetKind(StrEnum):
     VIDEO = "video"
 
 
+class ComicMotion(StrEnum):
+    HOLD = "hold"
+    PUSH_IN = "push_in"
+    PULL_OUT = "pull_out"
+    PAN_LEFT = "pan_left"
+    PAN_RIGHT = "pan_right"
+
+
+class CharacterSpec(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=50)
+    role: str = Field(default="", max_length=100)
+    personality: str = Field(default="", max_length=300)
+    appearance_prompt: str = Field(min_length=10, max_length=1_000)
+    outfit_prompt: str = Field(default="", max_length=500)
+    voice: str = Field(default="Vivian", max_length=100)
+    voice_instruct: str = Field(default="", max_length=300)
+
+
 class ShotSpec(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex[:12])
     order: int = Field(ge=1, le=30)
@@ -93,6 +118,16 @@ class ShotSpec(BaseModel):
     negative_prompt: str = Field(default="", max_length=1_000)
     duration_seconds: int = Field(default=5, ge=2, le=15)
     kind: AssetKind = AssetKind.VIDEO
+    scene_id: str = Field(default="", max_length=80)
+    characters: list[str] = Field(default_factory=list, max_length=4)
+    speaker: str = Field(default="", max_length=64)
+    dialogue: str = Field(default="", max_length=500)
+    emotion: str = Field(default="", max_length=100)
+    action: str = Field(default="", max_length=300)
+    shot_type: str = Field(default="", max_length=80)
+    camera_motion: ComicMotion = ComicMotion.HOLD
+    continuity: dict[str, str] = Field(default_factory=dict)
+    keyframe_path: str | None = None
     presentation_mode: ShotPresentationMode = ShotPresentationMode.NARRATION
     effective_presentation_mode: ShotPresentationMode | None = None
     provider: str | None = None
@@ -117,6 +152,9 @@ class ContentPlan(BaseModel):
     creative_direction: str = Field(min_length=5, max_length=1_000)
     cover_prompt: str = Field(min_length=10, max_length=2_000)
     character_reference_prompt: str = Field(default="", max_length=2_000)
+    story_summary: str = Field(default="", max_length=2_000)
+    episode_goal: str = Field(default="", max_length=500)
+    characters: list[CharacterSpec] = Field(default_factory=list, max_length=4)
     shots: list[ShotSpec] = Field(min_length=3, max_length=12)
 
 
@@ -178,6 +216,7 @@ class AutomationCreate(BaseModel):
     topic: str = Field(min_length=2, max_length=500)
     platforms: list[Platform] = Field(min_length=1)
     video_materials: list[str] = Field(default_factory=list, max_length=100)
+    content_type: ContentType = ContentType.STANDARD
     presentation_mode: PresentationMode = PresentationMode.NARRATION
     lip_sync_mode: LipSyncMode = LipSyncMode.AUTO
     interval_minutes: int = Field(default=1440, ge=1, le=525_600)
