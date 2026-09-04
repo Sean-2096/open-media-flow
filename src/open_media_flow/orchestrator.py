@@ -190,6 +190,7 @@ class AutomationEngine:
             platforms=automation.platforms,
             video_materials=automation.video_materials,
             presentation_mode=automation.presentation_mode,
+            lip_sync_mode=automation.lip_sync_mode,
             automation_id=automation.id,
         )
         self._record_event(task, "策划", TaskStatus.DRAFT, "任务已创建，等待本地编排器生成内容方案")
@@ -464,11 +465,15 @@ class AutomationEngine:
             if task.status == TaskStatus.LIP_SYNCING:
                 if task.content_plan is None:
                     raise ValueError("content plan is missing")
-                if not self.lip_sync.available():
+                if not self.lip_sync.available(task.lip_sync_mode.value):
                     self._wait_for_runtime(
                         task,
                         "lip_sync",
-                        "正面讲话分镜已就绪，等待本地唇形同步运行时恢复",
+                        (
+                            "正面讲话分镜已就绪，等待 LatentSync 高质量运行时恢复"
+                            if task.lip_sync_mode.value == "quality"
+                            else "正面讲话分镜已就绪，等待可用的唇形同步运行时恢复"
+                        ),
                     )
                     return
                 self._mark_runtime_recovered(task)
@@ -484,6 +489,7 @@ class AutomationEngine:
                         shot.id,
                         shot.lip_sync_source_path or shot.media_path,
                         shot.audio_path,
+                        task.lip_sync_mode.value,
                     )
                     shot.lip_sync_job_id = job.id
                     shot.lip_sync_provider = job.provider

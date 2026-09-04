@@ -48,14 +48,24 @@ class LocalLipSyncClient:
         self.api_key = api_key
         self.media_root = media_root.resolve()
 
-    def available(self) -> bool:
+    def available(self, mode: str = "auto") -> bool:
         request = urllib.request.Request(
             f"{self.base_url}/health", headers=self._headers()
         )
         try:
             with urllib.request.urlopen(request, timeout=3) as response:
                 result = json.loads(response.read().decode("utf-8"))
-            return response.status == 200 and result.get("lip_sync_ready") is True
+            if response.status != 200 or result.get("lip_sync_ready") is not True:
+                return False
+            engines = {str(value) for value in result.get("lip_sync_engines", [])}
+            if mode == "quality":
+                return "latentsync-v1.6-512" in engines
+            if mode == "fast":
+                return (
+                    "musetalk-v1.5-mps" in engines
+                    or str(result.get("lip_sync", "")).startswith("musetalk")
+                )
+            return True
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
             return False
 
@@ -65,12 +75,14 @@ class LocalLipSyncClient:
         shot_id: str,
         video_path: str,
         audio_path: str,
+        mode: str = "auto",
     ) -> LipSyncJob:
         payload = {
             "task_id": task_id,
             "shot_id": shot_id,
             "video_path": self._request_path(video_path),
             "audio_path": self._request_path(audio_path),
+            "mode": mode,
         }
         request = urllib.request.Request(
             f"{self.base_url}/v1/video/lip-sync",
@@ -82,6 +94,10 @@ class LocalLipSyncClient:
             with urllib.request.urlopen(request, timeout=30) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
+            if exc.code == 503:
+                raise LipSyncRuntimeUnavailableError(
+                    f"lip-sync mode {mode} is not ready"
+                ) from exc
             raise LipSyncError(f"lip-sync runtime returned HTTP {exc.code}") from exc
         except (OSError, urllib.error.URLError, TimeoutError) as exc:
             raise LipSyncRuntimeUnavailableError(

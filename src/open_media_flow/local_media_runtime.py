@@ -35,6 +35,7 @@ lip_sync_root = Path(
 musetalk_base_url = os.getenv(
     "OMF_MUSETALK_BASE_URL", "http://127.0.0.1:8091"
 ).rstrip("/")
+latentsync_base_url = os.getenv("OMF_LATENTSYNC_BASE_URL", "").rstrip("/")
 musetalk_runtime = Path(
     os.getenv(
         "OMF_MUSETALK_RUNTIME",
@@ -94,6 +95,7 @@ class LipSyncRequest(BaseModel):
     shot_id: str = Field(min_length=1, max_length=64)
     video_path: str = Field(min_length=3, max_length=1_000)
     audio_path: str = Field(min_length=3, max_length=1_000)
+    mode: str = Field(default="auto", pattern="^(auto|fast|quality)$")
 
 
 def require_key(x_api_key: str = Header(default="")) -> None:
@@ -139,13 +141,31 @@ def _rife_ready() -> bool:
 
 
 def _musetalk_ready() -> bool:
-    request = urllib.request.Request(f"{musetalk_base_url}/health")
+    return _lip_engine_ready(musetalk_base_url)
+
+
+def _latentsync_ready() -> bool:
+    return bool(latentsync_base_url) and _lip_engine_ready(latentsync_base_url)
+
+
+def _lip_engine_ready(base_url: str) -> bool:
+    request = urllib.request.Request(f"{base_url}/health")
     try:
         with urllib.request.urlopen(request, timeout=3) as response:
             result = json.loads(response.read().decode("utf-8"))
-        return response.status == 200 and result.get("ok") is True
+        return response.status == 200 and (
+            result.get("ok") is True or result.get("status") == "ok"
+        )
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
         return False
+
+
+def _select_lip_engine(mode: str) -> tuple[str, str] | None:
+    if mode in {"auto", "quality"} and _latentsync_ready():
+        return "latentsync-v1.6-512", latentsync_base_url
+    if mode in {"auto", "fast"} and _musetalk_ready():
+        return "musetalk-v1.5-mps", musetalk_base_url
+    return None
 
 
 @app.get("/health")
@@ -153,14 +173,23 @@ def health(x_api_key: str = Header(default="")) -> dict[str, object]:
     require_key(x_api_key)
     tts_ready = tts_provider == "macos-say" or _qwen_ready()
     frame_ready = _rife_ready()
-    lip_sync_ready = _musetalk_ready()
+    muse_ready = _musetalk_ready()
+    latent_ready = _latentsync_ready()
+    lip_sync_ready = muse_ready or latent_ready
+    engines = []
+    if latent_ready:
+        engines.append("latentsync-v1.6-512")
+    if muse_ready:
+        engines.append("musetalk-v1.5-mps")
     return {
         "status": "ok" if tts_ready and frame_ready else "degraded",
         "tts": tts_provider,
         "tts_ready": tts_ready,
         "tts_model": tts_model_path.name if tts_provider == "qwen3-mlx" else "system",
-        "lip_sync": "musetalk-v1.5-mps" if lip_sync_ready else "musetalk-unavailable",
+        "lip_sync": engines[0] if engines else "lip-sync-unavailable",
         "lip_sync_ready": lip_sync_ready,
+        "lip_sync_engines": engines,
+        "lip_sync_modes": ["auto", "fast", "quality"],
         "frame_interpolation": "rife-mlx",
         "frame_interpolation_ready": frame_ready,
     }
@@ -193,6 +222,8 @@ def _run_lip_sync_job(
     shot_id: str,
     video: Path,
     audio: Path,
+    provider: str,
+    provider_base_url: str,
 ) -> None:
     started_at = time.monotonic()
     output = lip_sync_root / task_id / f"{shot_id}.mp4"
@@ -207,7 +238,7 @@ def _run_lip_sync_job(
             }
         ).encode("utf-8")
         request = urllib.request.Request(
-            f"{musetalk_base_url}/lipsync",
+            f"{provider_base_url}/lipsync",
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -218,7 +249,7 @@ def _run_lip_sync_job(
                 result = json.loads(response.read().decode("utf-8"))
         video_b64 = str(result.get("video_b64") or "")
         if not video_b64:
-            raise RuntimeError("MuseTalk returned no video")
+            raise RuntimeError(f"{provider} returned no video")
         output.write_bytes(base64.b64decode(video_b64))
         _set_lip_job(job_id, progress=90, stage="quality_check")
         sync_score, face_coverage = _score_lip_sync(output, audio)
@@ -467,8 +498,15 @@ def lip_sync(
     require_key(x_api_key)
     task_id = _safe_id(body.task_id, "task id")
     shot_id = _safe_id(body.shot_id, "shot id")
-    if not _musetalk_ready():
-        raise HTTPException(status_code=503, detail="MuseTalk MPS runtime is not ready")
+    selected = _select_lip_engine(body.mode)
+    if selected is None:
+        detail = (
+            "LatentSync quality runtime is not ready"
+            if body.mode == "quality"
+            else "No compatible lip-sync runtime is ready"
+        )
+        raise HTTPException(status_code=503, detail=detail)
+    provider, provider_base_url = selected
     video = _resolve_source(body.video_path)
     audio = _resolve_source(body.audio_path)
     job_id = uuid.uuid4().hex
@@ -478,15 +516,16 @@ def lip_sync(
             "progress": 0,
             "stage": "queued",
             "started_at": time.monotonic(),
-            "provider": "musetalk-v1.5-mps",
+            "provider": provider,
+            "requested_mode": body.mode,
         }
     threading.Thread(
         target=_run_lip_sync_job,
-        args=(job_id, task_id, shot_id, video, audio),
+        args=(job_id, task_id, shot_id, video, audio, provider, provider_base_url),
         daemon=True,
         name=f"lip-sync-{job_id[:8]}",
     ).start()
-    return {"job_id": job_id, "provider": "musetalk-v1.5-mps"}
+    return {"job_id": job_id, "provider": provider}
 
 
 @app.get("/v1/video/lip-sync/{job_id}")

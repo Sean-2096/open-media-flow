@@ -25,6 +25,12 @@ class PresentationMode(StrEnum):
     TALKING_HEAD = "talking_head"
 
 
+class LipSyncMode(StrEnum):
+    AUTO = "auto"
+    FAST = "fast"
+    QUALITY = "quality"
+
+
 class ShotPresentationMode(StrEnum):
     NARRATION = "narration"
     TALKING_HEAD = "talking_head"
@@ -63,6 +69,7 @@ class TaskCreate(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=30)
     video_materials: list[str] = Field(default_factory=list, max_length=100)
     presentation_mode: PresentationMode = PresentationMode.NARRATION
+    lip_sync_mode: LipSyncMode = LipSyncMode.AUTO
     contains_synthetic_media: bool = True
 
 
@@ -172,6 +179,7 @@ class AutomationCreate(BaseModel):
     platforms: list[Platform] = Field(min_length=1)
     video_materials: list[str] = Field(default_factory=list, max_length=100)
     presentation_mode: PresentationMode = PresentationMode.NARRATION
+    lip_sync_mode: LipSyncMode = LipSyncMode.AUTO
     interval_minutes: int = Field(default=1440, ge=1, le=525_600)
     enabled: bool = True
 

@@ -310,6 +310,10 @@ def media_file_response(value: str | None, label: str) -> FileResponse:
 @app.get("/health")
 def health() -> dict:
     components = runtime_health()
+    native_health = _probe_json(
+        f"{settings.local_media_runtime_base_url}/health",
+        headers={"X-API-Key": settings.local_media_runtime_api_key},
+    )
     generation_ready = (
         settings.media_generation_enabled
         and components["generation_engine_ready"]
@@ -334,13 +338,15 @@ def health() -> dict:
         "media_video_provider": settings.media_video_provider,
         "lip_sync_enabled": settings.lip_sync_enabled,
         "lip_sync_fallback_to_narration": settings.lip_sync_fallback_to_narration,
+        "lip_sync_engines": native_health.get("lip_sync_engines", []),
+        "lip_sync_modes": native_health.get("lip_sync_modes", []),
         "generation_ready": generation_ready,
         "components": components,
     }
 
 
 @app.get("/media-runtime", dependencies=[Depends(require_api_key)])
-def media_runtime() -> dict[str, str | bool]:
+def media_runtime() -> dict[str, object]:
     return {
         "provider": media_provider.name,
         "base_url": settings.comfyui_base_url,
@@ -354,6 +360,10 @@ def media_runtime() -> dict[str, str | bool]:
         "lip_sync_enabled": settings.lip_sync_enabled,
         "lip_sync_runtime": settings.lip_sync_base_url,
         "lip_sync_available": lip_sync.available(),
+        "lip_sync_engines": _probe_json(
+            f"{settings.local_media_runtime_base_url}/health",
+            headers={"X-API-Key": settings.local_media_runtime_api_key},
+        ).get("lip_sync_engines", []),
     }
 
 

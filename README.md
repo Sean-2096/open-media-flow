@@ -170,6 +170,11 @@ MuseTalk 的默认融合参数针对本机写实人物做了保守收口：缩�
 `MUSETALK_LEFT_CHEEK_WIDTH`、`MUSETALK_RIGHT_CHEEK_WIDTH`、
 `MUSETALK_UPPER_BOUNDARY_RATIO` 和 `MUSETALK_TEMPORAL_SMOOTHING` 微调。
 
+口型阶段支持三档策略：`auto` 优先调用 LatentSync 1.6 质量 Worker，离线时自动使用
+MuseTalk MPS；`fast` 固定使用本机 MuseTalk；`quality` 固定等待 LatentSync，不会把
+低质量结果伪装成高质量结果。CUDA Worker 的统一适配器位于
+`services/latentsync-worker`，连接地址通过 `OMF_LATENTSYNC_BASE_URL` 配置。
+
 在媒体模型尚未启用时，流程停在 `planned`，运行记录显示
 `waiting_for_media_runtime`。安装模型和工作流后将 `OMF_MEDIA_GENERATION_ENABLED=true`，
 重启 API，已有任务会继续推进。

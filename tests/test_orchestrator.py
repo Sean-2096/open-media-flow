@@ -553,7 +553,7 @@ def test_lip_sync_quality_gate_falls_back_on_low_score(tmp_path):
     )
 
     class LowScoreLipSync:
-        def available(self):
+        def available(self, mode="auto"):
             return True
 
         def poll(self, _job_id):
